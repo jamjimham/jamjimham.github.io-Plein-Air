@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#3b2a1a" />
+  <title>Plein Air Journal</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; background: #3b2a1a; }
+    body { font-family: Georgia, serif; -webkit-text-size-adjust: 100%; }
+    select, input, textarea, button { font-family: inherit; -webkit-appearance: none; appearance: none; }
+    input[type="date"] { -webkit-appearance: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #d6c4a8; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // localStorage fallback for Netlify (no window.storage)
+    window.storage = window.storage || {
+      get: async (k) => { const v = localStorage.getItem(k); return v ? {value:v} : null; },
+      set: async (k,v) => { localStorage.setItem(k,v); },
+    };
+
+
+/* ─── Constants ─────────────────────────────────────────────────── */
+const SPOTS_KEY  = "plein-air-spots-v1";
+const BUCKET_KEY = "plein-air-bucket-v1";
+
+const WEATHER = [
+  { label:"☀️ Sunny",         value:"sunny" },
+  { label:"⛅ Partly Cloudy", value:"partly-cloudy" },
+  { label:"☁️ Overcast",      value:"overcast" },
+  { label:"🌫️ Foggy",         value:"foggy" },
+  { label:"🌧️ Rainy",         value:"rainy" },
+  { label:"🌬️ Windy",         value:"windy" },
+  { label:"❄️ Snowy",         value:"snowy" },
+  { label:"🌩️ Stormy",        value:"stormy" },
+];
+const LIGHTS = [
+  "Golden Hour Morning","Midday","Afternoon","Golden Hour Evening",
+  "Overcast Flat","Backlit","Side Lit","Dappled",
+];
+const MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+const DAYS   = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+
+const fmtDate = iso =>
+  new Date(iso).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});
+
+const weatherLabel = v => WEATHER.find(w => w.value === v)?.label ?? "";
+
+/* ─── Shared styles ─────────────────────────────────────────────── */
+const S = {
+  inp: {
+    width:"100%", padding:"10px 12px", borderRadius:10,
+    border:"1.5px solid #d6c4a8", background:"#fffdf8",
+    fontFamily:"Georgia,serif", fontSize:15, color:"#3b2a1a",
+    outline:"none", boxSizing:"border-box",
+  },
+  lbl: {
+    fontSize:11, color:"#9a7a5a", letterSpacing:"0.1em",
+    fontFamily:"Georgia,serif", marginBottom:4, display:"block",
+  },
+  cancelBtn: {
+    flex:1, padding:"12px 0", borderRadius:12, border:"1.5px solid #d6c4a8",
+    background:"transparent", color:"#7a5c3e", fontFamily:"Georgia,serif",
+    fontSize:14, cursor:"pointer",
+  },
+  saveBtn: {
+    flex:2, padding:"12px 0", borderRadius:12, border:"none",
+    background:"linear-gradient(135deg,#c46a2e,#9a4820)", color:"#fff",
+    fontFamily:"Georgia,serif", fontSize:14, fontWeight:"bold",
+    cursor:"pointer", boxShadow:"0 4px 14px rgba(160,60,10,0.3)",
+  },
+  error: {
+    background:"#fde8d8", color:"#a03a10", padding:"8px 12px",
+    borderRadius:8, marginBottom:12, fontSize:13,
+  },
+};
+
+/* ─── Storage hook ──────────────────────────────────────────────── */
+function useStoredList(key) {
+  const [list, setList]     = useState([]);
+  const [ready, setReady]   = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(key);
+        if (r?.value) setList(JSON.parse(r.value));
+      } catch {}
+      setReady(true);
+    })();
+  }, [key]);
+
+  useEffect(() => {
+    if (!ready) return;
+    try { window.storage.set(key, JSON.stringify(list)); } catch {}
+  }, [list, ready, key]);
+
+  return [list, setList];
+}
+
+/* ─── Coord validation ──────────────────────────────────────────── */
+function validateCoords(lat, lng) {
+  const la = parseFloat(lat), lo = parseFloat(lng);
+  if (isNaN(la) || isNaN(lo))            return "Please enter valid coordinates.";
+  if (la < -90  || la > 90)             return "Latitude must be between -90 and 90.";
+  if (lo < -180 || lo > 180)            return "Longitude must be between -180 and 180.";
+  return null;
+}
+
+/* ─── Map ───────────────────────────────────────────────────────── */
+function MapView({ spots, bucket, selectedId, onSelect }) {
+  const mapRef      = useRef(null);
+  const instanceRef = useRef(null);
+  const [ready, setReady] = useState(!!window.L);
+
+  useEffect(() => {
+    if (window.L) return;
+    const link = Object.assign(document.createElement("link"), {
+      rel:"stylesheet",
+      href:"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
+    });
+    document.head.appendChild(link);
+    const s = Object.assign(document.createElement("script"), {
+      src:"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js",
+      onload:() => setReady(true),
+    });
+    document.head.appendChild(s);
+  }, []);
+
+  // init map once
+  useEffect(() => {
+    if (!ready || !mapRef.current || instanceRef.current) return;
+    const L   = window.L;
+    const all = [...spots, ...bucket];
+    const map = L.map(mapRef.current, { zoomControl:false })
+      .setView(all.length ? [all[all.length-1].lat, all[all.length-1].lng] : [39.5,-98.35],
+               all.length ? 12 : 4);
+    L.control.zoom({ position:"bottomright" }).addTo(map);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { attribution:"© OpenStreetMap" }).addTo(map);
+    instanceRef.current = map;
+    return () => { try { map.remove(); } catch {} instanceRef.current = null; };
+  }, [ready]); // eslint-disable-line
+
+  // update markers
+  useEffect(() => {
+    const map = instanceRef.current;
+    if (!map) return;
+    const L = window.L;
+    map.eachLayer(l => { if (l instanceof L.CircleMarker) map.removeLayer(l); });
+
+    const addMarker = (item, isBucket) => {
+      const sel = item.id === selectedId;
+      const m = L.circleMarker([item.lat, item.lng], isBucket
+        ? { radius:sel?13:9, fillColor:sel?"#2a9d8f":"#1a7a6e", color:"#e0f5f3", weight:2, fillOpacity:0.88, dashArray:"4 3" }
+        : { radius:sel?13:9, fillColor:sel?"#d4763b":"#7a5c3e",  color:"#f5efe6", weight:2, fillOpacity:0.92 }
+      ).addTo(map);
+      m.bindPopup(`<div style="font-family:'Georgia',serif;min-width:140px">
+        ${isBucket?`<span style="font-size:11px;color:#1a7a6e;font-weight:bold">BUCKET LIST</span><br/>`:""}
+        <strong style="color:#3b2a1a">${item.name}</strong>
+        ${!isBucket?`<br/><span style="color:#7a5c3e;font-size:12px">${fmtDate(item.date)}</span><br/><span>${weatherLabel(item.weather)}</span>`:""}
+        ${item.notes?`<p style="margin:5px 0 0;font-size:12px;color:#555">${item.notes}</p>`:""}
+      </div>`);
+      m.on("click", () => onSelect(item.id));
+    };
+
+    spots.forEach(s  => addMarker(s, false));
+    bucket.forEach(b => addMarker(b, true));
+
+    const all = [...spots, ...bucket];
+    if (all.length === 1) map.setView([all[0].lat, all[0].lng], 13);
+    else if (all.length > 1) map.fitBounds(L.latLngBounds(all.map(s=>[s.lat,s.lng])), { padding:[40,40] });
+  }, [spots, bucket, selectedId]);
+
+  return (
+    <div style={{ position:"relative", height:"100%", width:"100%" }}>
+      {!ready && (
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+          justifyContent:"center",background:"#f5ece0",color:"#7a5c3e",fontFamily:"Georgia,serif"}}>
+          Loading map…
+        </div>
+      )}
+      <div ref={mapRef} style={{ height:"100%", width:"100%", borderRadius:14 }} />
+    </div>
+  );
+}
+
+/* ─── Form fields ───────────────────────────────────────────────── */
+function FormFields({ form, setForm, isBucket }) {
+  const [gps, setGps] = useState("idle");
+  const set = (k, v) => setForm(f => ({ ...f, [k]:v }));
+
+  const useGps = () => {
+    if (!navigator.geolocation) return;
+    setGps("locating");
+    navigator.geolocation.getCurrentPosition(
+      pos => { setForm(f => ({ ...f, lat:pos.coords.latitude.toFixed(5), lng:pos.coords.longitude.toFixed(5) })); setGps("done"); },
+      ()  => setGps("error"),
+      { enableHighAccuracy:true, timeout:10000 },
+    );
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+      <div>
+        <label style={S.lbl}>LOCATION NAME</label>
+        <input style={S.inp} value={form.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Riverside Willows" />
+      </div>
+
+      {!isBucket && (
+        <div>
+          <label style={S.lbl}>DATE</label>
+          <input style={S.inp} type="date" value={form.date} onChange={e=>set("date",e.target.value)} />
+        </div>
+      )}
+
+      <div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+          <span style={{ ...S.lbl, marginBottom:0 }}>COORDINATES</span>
+          <button type="button" onClick={useGps} style={{
+            display:"flex", alignItems:"center", gap:5, padding:"6px 12px",
+            borderRadius:20, border:"none", cursor:"pointer", fontFamily:"Georgia,serif",
+            fontSize:12, fontWeight:"bold", transition:"all 0.2s",
+            background: gps==="done"?"#d4edda": gps==="locating"?"#e8dcc8":"linear-gradient(135deg,#c46a2e,#9a4820)",
+            color:       gps==="done"?"#2a6b3a": gps==="locating"?"#7a5c3e":"#fff",
+          }}>
+            {gps==="locating"?"⏳ Locating…": gps==="done"?"✓ Got it!":"📍 Use My Location"}
+          </button>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <div>
+            <label style={S.lbl}>LATITUDE</label>
+            <input style={S.inp} type="text" value={form.lat} onChange={e=>set("lat",e.target.value)} placeholder="37.7749" />
+          </div>
+          <div>
+            <label style={S.lbl}>LONGITUDE</label>
+            <input style={S.inp} type="text" value={form.lng} onChange={e=>set("lng",e.target.value)} placeholder="-122.4194" />
+          </div>
+        </div>
+        <p style={{ marginTop:4, fontSize:11, color:"#b09070", lineHeight:1.5 }}>
+          💡 On Google Maps, tap &amp; hold → tap the coordinates at the bottom.
+        </p>
+      </div>
+
+      {!isBucket && (<>
+        <div>
+          <label style={S.lbl}>WEATHER</label>
+          <select style={S.inp} value={form.weather} onChange={e=>set("weather",e.target.value)}>
+            {WEATHER.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.lbl}>LIGHT QUALITY</label>
+          <select style={S.inp} value={form.light} onChange={e=>set("light",e.target.value)}>
+            {LIGHTS.map(l => <option key={l}>{l}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.lbl}>TEMPERATURE (optional)</label>
+          <input style={S.inp} value={form.temp} onChange={e=>set("temp",e.target.value)} placeholder="e.g. 18°C / 65°F" />
+        </div>
+        <div>
+          <label style={S.lbl}>MEDIUM (optional)</label>
+          <input style={S.inp} value={form.medium} onChange={e=>set("medium",e.target.value)} placeholder="Oil, Watercolor, Pastel…" />
+        </div>
+      </>)}
+
+      <div>
+        <label style={S.lbl}>NOTES</label>
+        <textarea style={{ ...S.inp, minHeight:75, resize:"vertical" }}
+          value={form.notes} onChange={e=>set("notes",e.target.value)}
+          placeholder={isBucket ? "Why paint here? Best time of year…" : "What inspired you? Challenges, discoveries…"} />
+      </div>
+    </div>
+  );
+}
+
+/* ─── Bottom sheet wrapper ──────────────────────────────────────── */
+function Sheet({ title, onClose, onSave, saveLabel, children }) {
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(30,18,8,0.6)", zIndex:1000,
+      display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+      <div style={{ background:"#fffdf7", borderRadius:"20px 20px 0 0", width:"100%", maxWidth:560,
+        boxShadow:"0 -8px 40px rgba(60,30,10,0.25)", maxHeight:"88vh", display:"flex", flexDirection:"column" }}>
+        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}>
+          <div style={{ width:40, height:4, borderRadius:2, background:"#d6c4a8" }} />
+        </div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 20px 12px" }}>
+          <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:20, color:"#3b2a1a", margin:0 }}>{title}</h2>
+          <button onClick={onClose} style={{ background:"#f0e8dc", border:"none", cursor:"pointer",
+            borderRadius:"50%", width:30, height:30, fontSize:15, color:"#7a5c3e",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+        </div>
+        <div style={{ overflowY:"auto", flex:1, padding:"0 20px 8px" }}>{children}</div>
+        <div style={{ display:"flex", gap:10, padding:"12px 20px 16px", borderTop:"1px solid #ede3d5" }}>
+          <button onClick={onClose} style={S.cancelBtn}>Cancel</button>
+          <button onClick={onSave}  style={S.saveBtn}>{saveLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Unified spot modal (add + edit) ───────────────────────────── */
+const BLANK = { name:"", lat:"", lng:"", weather:"sunny", light:"Golden Hour Morning", temp:"", notes:"", medium:"" };
+
+function SpotModal({ initial, editingBucket, onSave, onClose }) {
+  const isEdit  = !!initial;
+  const today   = new Date().toISOString().slice(0,10);
+  const [isBucket, setIsBucket] = useState(editingBucket ?? false);
+  const [form,  setForm]  = useState(isEdit
+    ? { ...initial, lat:String(initial.lat), lng:String(initial.lng) }
+    : { ...BLANK, date:today });
+  const [error, setError] = useState("");
+
+  const handleSave = () => {
+    if (!form.name.trim()) { setError("Please enter a location name."); return; }
+    const err = validateCoords(form.lat, form.lng);
+    if (err) { setError(err); return; }
+    onSave(
+      { ...form, lat:parseFloat(form.lat), lng:parseFloat(form.lng),
+        id:initial?.id ?? Date.now().toString(),
+        createdAt:initial?.createdAt ?? new Date().toISOString() },
+      isBucket,
+    );
+  };
+
+  const title = isEdit
+    ? (editingBucket ? "Edit Bucket List Spot" : "Edit Painting Spot")
+    : (isBucket      ? "New Bucket List Spot"  : "New Painting Spot");
+
+  return (
+    <Sheet title={title} onClose={onClose} onSave={handleSave} saveLabel={isEdit ? "Save Changes" : "Save"}>
+      {!isEdit && (
+        <div style={{ display:"flex", gap:6, marginBottom:14, padding:4, background:"#f0e8dc", borderRadius:12 }}>
+          {[["🎨","Painted",false],["⭐","Bucket List",true]].map(([ico, lbl, val]) => (
+            <button key={String(val)} onClick={() => setIsBucket(val)} style={{
+              flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer",
+              fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", transition:"all 0.15s",
+              background: isBucket===val ? "#fff"    : "transparent",
+              color:       isBucket===val ? "#3b2a1a" : "#9a7a5a",
+              boxShadow:   isBucket===val ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
+            }}>{ico} {lbl}</button>
+          ))}
+        </div>
+      )}
+      {error && <div style={S.error}>{error}</div>}
+      <FormFields form={form} setForm={setForm} isBucket={isBucket} />
+    </Sheet>
+  );
+}
+
+/* ─── Calendar ──────────────────────────────────────────────────── */
+function CalendarView({ spots, onSelectSpot }) {
+  const today = new Date();
+  const [yr,  setYr]  = useState(today.getFullYear());
+  const [mo,  setMo]  = useState(today.getMonth());
+  const [sel, setSel] = useState(null);
+
+  const byDate = {};
+  spots.forEach(s => { const k=s.date.slice(0,10); (byDate[k]=byDate[k]||[]).push(s); });
+
+  const firstDay    = new Date(yr, mo, 1).getDay();
+  const daysInMonth = new Date(yr, mo+1, 0).getDate();
+  const todayStr    = today.toISOString().slice(0,10);
+  const pad         = n => String(n).padStart(2,"0");
+  const keyFor      = d => `${yr}-${pad(mo+1)}-${pad(d)}`;
+
+  const prevMo = () => { setSel(null); mo===0 ? (setMo(11),setYr(y=>y-1)) : setMo(m=>m-1); };
+  const nextMo = () => { setSel(null); mo===11? (setMo(0), setYr(y=>y+1)) : setMo(m=>m+1); };
+
+  const cells = [...Array(firstDay).fill(null), ...Array(daysInMonth).fill(0).map((_,i)=>i+1)];
+  const selKey   = sel ? keyFor(sel) : null;
+  const selSpots = selKey ? (byDate[selKey]||[]) : [];
+
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", padding:"14px 14px 8px" }}>
+      {/* nav */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+        {[["‹",prevMo],["›",nextMo]].map(([icon,fn],i) => (
+          <button key={i} onClick={fn} style={{ background:"#f0e8dc", border:"none", borderRadius:10,
+            width:36, height:36, fontSize:20, cursor:"pointer", color:"#7a5c3e",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>{icon}</button>
+        )).reduce((a,el,i) => i===0 ? [el,
+          <div key="mid" style={{ textAlign:"center" }}>
+            <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:20, color:"#3b2a1a", fontWeight:"bold" }}>{MONTHS[mo]}</div>
+            <div style={{ fontSize:12, color:"#9a7a5a" }}>{yr}</div>
+          </div>
+        ] : [...a, el], [])}
+      </div>
+
+      {/* day headers */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", marginBottom:4 }}>
+        {DAYS.map(d => <div key={d} style={{ textAlign:"center", fontSize:11, color:"#b09070", fontWeight:"bold", padding:"2px 0" }}>{d}</div>)}
+      </div>
+
+      {/* cells */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:3 }}>
+        {cells.map((day, i) => {
+          if (!day) return <div key={"e"+i} />;
+          const key=keyFor(day), ds=byDate[key]||[], has=ds.length>0;
+          const isToday=key===todayStr, isSel=day===sel;
+          return (
+            <div key={key} onClick={() => setSel(isSel?null:day)} style={{
+              aspectRatio:"1", display:"flex", flexDirection:"column",
+              alignItems:"center", justifyContent:"center", borderRadius:10,
+              cursor:has?"pointer":"default", transition:"all 0.15s", position:"relative",
+              background: isSel?"#c46a2e": isToday?"#f0e8dc":"transparent",
+              border: isToday&&!isSel?"1.5px solid #d6b898":"1.5px solid transparent",
+            }}>
+              <span style={{ fontSize:14, fontFamily:"Georgia,serif",
+                color:isSel?"#fff":isToday?"#c46a2e":"#3b2a1a",
+                fontWeight:isToday?"bold":"normal" }}>{day}</span>
+              {has && (
+                <div style={{ position:"absolute", bottom:3, display:"flex", gap:2 }}>
+                  {ds.slice(0,3).map((_,j) => (
+                    <div key={j} style={{ width:4, height:4, borderRadius:"50%",
+                      background:isSel?"rgba(255,255,255,0.85)":"#c46a2e" }} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* selected day list */}
+      <div style={{ flex:1, overflowY:"auto", marginTop:12 }}>
+        {sel && selSpots.length===0 && (
+          <div style={{ textAlign:"center", color:"#b09070", fontSize:13, padding:"16px 0", fontStyle:"italic" }}>
+            No painting sessions this day.
+          </div>
+        )}
+        {selSpots.map(s => (
+          <div key={s.id} onClick={() => onSelectSpot(s.id)}
+            style={{ padding:"11px 13px", borderRadius:12, background:"#fffdf7",
+              border:"1.5px solid #e8dcc8", marginBottom:8, cursor:"pointer" }}>
+            <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>{s.name}</div>
+            <div style={{ fontSize:13, color:"#9a7a5a", marginTop:2 }}>{weatherLabel(s.weather)}{s.light?` · ${s.light}`:""}</div>
+            {s.medium && <div style={{ fontSize:12, color:"#b09070" }}>{s.medium}</div>}
+            {s.notes  && <div style={{ fontSize:12, color:"#6b5040", marginTop:4, fontStyle:"italic" }}>"{s.notes.slice(0,80)}{s.notes.length>80?"…":""}"</div>}
+          </div>
+        ))}
+        {!sel && (
+          <div style={{ textAlign:"center", color:"#b09070", fontSize:13, padding:"12px 0", fontStyle:"italic" }}>
+            Tap a day to see your sessions
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Spot card ─────────────────────────────────────────────────── */
+function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPromote }) {
+  const accent = isBucket ? "#1a7a6e" : "#c46a2e";
+  return (
+    <div onClick={() => onSelect(spot.id)} style={{
+      padding:"13px 15px", borderRadius:13, cursor:"pointer", marginBottom:9, transition:"all 0.18s",
+      background: isSelected ? (isBucket?"#e0f5f3":"#f5e8d6") : "#fffdf7",
+      border: `1.5px solid ${isSelected ? (isBucket?"#2a9d8f":"#c46a2e") : "#e8dcc8"}`,
+      boxShadow: isSelected ? "0 4px 14px rgba(0,0,0,0.09)" : "none",
+    }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>{spot.name}</div>
+          {!isBucket && <div style={{ fontSize:12, color:"#9a7a5a", marginTop:2 }}>{fmtDate(spot.date)} · {weatherLabel(spot.weather)}</div>}
+          {!isBucket && spot.light && <div style={{ fontSize:11, color:"#b09070", marginTop:1 }}>{spot.light}{spot.medium?` · ${spot.medium}`:""}</div>}
+          {!isBucket && spot.temp  && <div style={{ fontSize:11, color:"#b09070" }}>🌡 {spot.temp}</div>}
+          {spot.notes && <div style={{ fontSize:12, color:"#6b5040", marginTop:5, fontStyle:"italic", lineHeight:1.4 }}>"{spot.notes.slice(0,100)}{spot.notes.length>100?"…":""}"</div>}
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:6, paddingLeft:10, flexShrink:0 }}>
+          <button onClick={e=>{e.stopPropagation();onEdit(spot.id);}}   style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,color:accent,padding:0 }}>✏️</button>
+          {isBucket && <button onClick={e=>{e.stopPropagation();onPromote(spot.id);}} style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,padding:0 }} title="Mark as painted">🎨</button>}
+          <button onClick={e=>{e.stopPropagation();onDelete(spot.id);}} style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,color:"#c8a88a",padding:0 }}>🗑</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── CSV export ────────────────────────────────────────────────── */
+function exportCSV(spots, bucket) {
+  const esc  = v => `"${String(v||"").replace(/"/g,'""')}"`;
+  const rows = [
+    ["Type","Name","Date","Latitude","Longitude","Weather","Light","Temperature","Medium","Notes"].join(","),
+    ...spots.map(s  => ["Painted",    s.name, s.date, s.lat, s.lng, weatherLabel(s.weather), s.light||"", s.temp||"", s.medium||"", s.notes||""].map(esc).join(",")),
+    ...bucket.map(b => ["Bucket List",b.name, "",     b.lat, b.lng, "", "", "", "", b.notes||""].map(esc).join(",")),
+  ];
+  const a = Object.assign(document.createElement("a"), {
+    href:     URL.createObjectURL(new Blob([rows.join("\n")], { type:"text/csv" })),
+    download: `plein-air-${new Date().toISOString().slice(0,10)}.csv`,
+  });
+  a.click();
+}
+
+/* ─── App ───────────────────────────────────────────────────────── */
+function App() {
+  const [spots,  setSpots]  = useStoredList(SPOTS_KEY);
+  const [bucket, setBucket] = useStoredList(BUCKET_KEY);
+  const [selId,  setSelId]  = useState(null);
+  const [modal,  setModal]  = useState(null); // null | { initial?, editingBucket? }
+  const [search, setSearch] = useState("");
+  const [tab,    setTab]    = useState("map");
+
+  const filt = arr => arr.filter(s =>
+    s.name.toLowerCase().includes(search.toLowerCase()) ||
+    (s.notes||"").toLowerCase().includes(search.toLowerCase())
+  );
+
+  const handleSave = (item, isBucket) => {
+    const update = prev => prev.some(x => x.id===item.id) ? prev.map(x=>x.id===item.id?item:x) : [...prev, item];
+    if (isBucket) { setBucket(update); setSpots(p=>p.filter(x=>x.id!==item.id)); }
+    else          { setSpots(update);  setBucket(p=>p.filter(x=>x.id!==item.id)); }
+    setSelId(item.id); setModal(null); setTab("map");
+  };
+
+  const openEdit = id => {
+    const s = spots.find(x=>x.id===id), b = bucket.find(x=>x.id===id);
+    if (s) setModal({ initial:s, editingBucket:false });
+    if (b) setModal({ initial:b, editingBucket:true  });
+  };
+
+  const handleDelete = id => {
+    if (!confirm("Remove this spot?")) return;
+    setSpots(p=>p.filter(s=>s.id!==id));
+    setBucket(p=>p.filter(b=>b.id!==id));
+    setSelId(p=>p===id?null:p);
+  };
+
+  const promote = id => {
+    const b = bucket.find(x=>x.id===id); if (!b) return;
+    setBucket(p=>p.filter(x=>x.id!==id));
+    setSpots(p=>[...p, { ...b, date:new Date().toISOString().slice(0,10), weather:"sunny", light:"Golden Hour Morning", temp:"", medium:"" }]);
+    setSelId(id); setTab("map");
+  };
+
+  const Tab = ({ t, icon, label }) => (
+    <button onClick={() => setTab(t)} style={{
+      flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:2,
+      padding:"8px 0", border:"none", cursor:"pointer", background:"transparent",
+      color:tab===t?"#c46a2e":"#9a7a5a", fontFamily:"Georgia,serif",
+      fontSize:10, letterSpacing:"0.06em", transition:"color 0.15s",
+    }}>
+      <span style={{ fontSize:19 }}>{icon}</span>{label}
+    </button>
+  );
+
+  const ListPane = ({ items, isBucket, emptyMsg }) => (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+      <div style={{ padding:"11px 13px 7px" }}>
+        <input placeholder={isBucket?"Search bucket list…":"Search journal…"}
+          value={search} onChange={e=>setSearch(e.target.value)}
+          style={{ ...S.inp, background:"#fffdf7", borderRadius:12, fontSize:15 }} />
+      </div>
+      <div style={{ flex:1, overflowY:"auto", padding:"4px 13px 12px" }}>
+        {filt(items).length===0 && (
+          <div style={{ textAlign:"center", color:isBucket?"#1a7a6e":"#b09070",
+            fontSize:13, padding:"36px 16px", fontStyle:"italic", lineHeight:1.8 }}>{emptyMsg}</div>
+        )}
+        {[...filt(items)].reverse().map(s => (
+          <SpotCard key={s.id} spot={s} isSelected={s.id===selId} isBucket={isBucket}
+            onSelect={id=>{setSelId(id);setTab("map");}}
+            onEdit={openEdit} onDelete={handleDelete} onPromote={promote} />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ height:"100vh", display:"flex", flexDirection:"column", fontFamily:"Georgia,serif", background:"#f5ece0" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between",
+        background:"#3b2a1a", boxShadow:"0 2px 12px rgba(30,15,5,0.35)", flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:22 }}>🎨</span>
+          <div>
+            <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:17, color:"#f5e8d0" }}>Plein Air Journal</div>
+            <div style={{ fontSize:10, color:"#b09070", letterSpacing:"0.1em" }}>{spots.length} PAINTED · {bucket.length} BUCKET</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <button onClick={() => exportCSV(spots,bucket)} title="Export CSV"
+            style={{ padding:"7px 9px", borderRadius:9, border:"none", background:"rgba(255,255,255,0.1)", color:"#f5e8d0", fontSize:15, cursor:"pointer" }}>⬇️</button>
+          <button onClick={() => setModal({})}
+            style={{ padding:"9px 16px", borderRadius:20, border:"none", background:"linear-gradient(135deg,#c46a2e,#9a4820)",
+              color:"#fff", fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", cursor:"pointer",
+              boxShadow:"0 3px 12px rgba(160,60,10,0.45)" }}>+ Add</button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        {tab==="map" && (
+          <div style={{ flex:1, padding:12, overflow:"hidden", position:"relative" }}>
+            <MapView spots={filt(spots)} bucket={filt(bucket)} selectedId={selId} onSelect={setSelId} />
+            <div style={{ position:"absolute", bottom:20, left:22, zIndex:999, pointerEvents:"none",
+              background:"rgba(255,253,247,0.93)", borderRadius:10, padding:"6px 10px",
+              fontSize:11, color:"#3b2a1a", boxShadow:"0 2px 8px rgba(0,0,0,0.15)",
+              display:"flex", flexDirection:"column", gap:4 }}>
+              {[["#7a5c3e","Painted"],["#1a7a6e","Bucket List"]].map(([c,l]) => (
+                <div key={l} style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ width:9, height:9, borderRadius:"50%", background:c, flexShrink:0 }} /> {l}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {tab==="list"   && <ListPane items={spots}  isBucket={false} emptyMsg={spots.length===0?"No spots yet.\nTap + Add to log your first session.":"No spots match your search."} />}
+        {tab==="cal"    && <CalendarView spots={spots} onSelectSpot={id=>{setSelId(id);setTab("map");}} />}
+        {tab==="bucket" && <ListPane items={bucket} isBucket={true}  emptyMsg={bucket.length===0?"No bucket list spots yet.\nTap + Add → Bucket List to add one.":"No spots match your search."} />}
+      </div>
+
+      {/* Tab bar */}
+      <div style={{ display:"flex", background:"#fffdf7", borderTop:"1px solid #e8dcc8", flexShrink:0 }}>
+        <Tab t="map"    icon="🗺"  label="MAP" />
+        <Tab t="cal"    icon="📅"  label="CALENDAR" />
+        <Tab t="list"   icon="☰"   label="JOURNAL" />
+        <Tab t="bucket" icon="⭐"  label="BUCKET" />
+      </div>
+
+      {modal && (
+        <SpotModal
+          initial={modal.initial}
+          editingBucket={modal.editingBucket}
+          onSave={handleSave}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
