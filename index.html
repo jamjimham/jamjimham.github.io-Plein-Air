@@ -149,7 +149,7 @@ function PhotoField({ label, value, onChange }) {
   return (
     <div>
       <label style={S.lbl}>{label}</label>
-      <input ref={inputRef} type="file" accept="image/*" capture="environment"
+      <input ref={inputRef} type="file" accept="image/*"
         onChange={handleFile} style={{ display:"none" }} />
 
       {value ? (
