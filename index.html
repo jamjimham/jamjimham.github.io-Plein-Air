@@ -234,7 +234,9 @@ function MapView({ spots, bucket, selectedId, onSelect }) {
       }).addTo(map);
 
       // build popup with optional photos
-      const photos = [item.photoPainting, item.photoScene].filter(Boolean);
+      const photos = item.paintedAt !== undefined
+        ? [item.photoPainting, item.photoScene].filter(Boolean)
+        : [item.photoLocation].filter(Boolean);
       const photoHtml = photos.length
         ? `<div style="display:flex;gap:4px;margin-top:6px">
             ${photos.map(p => `<img src="${p}" style="width:${photos.length===1?"100%":"48%"};border-radius:6px;object-fit:cover;max-height:100px">`).join("")}
@@ -373,8 +375,12 @@ function FormFields({ form, setForm, isBucket }) {
           placeholder={isBucket ? "Why paint here? Best time of year…" : "What inspired you? Challenges, discoveries…"} />
       </div>
 
-      {/* Photos — only for journal entries, not bucket list */}
-      {!isBucket && (<>
+      {/* Photos */}
+      {isBucket ? (
+        <PhotoField label="🏞  PHOTO OF LOCATION"
+          value={form.photoLocation ?? null}
+          onChange={v => set("photoLocation", v)} />
+      ) : (<>
         <PhotoField label="🎨  PHOTO OF PAINTING"
           value={form.photoPainting ?? null}
           onChange={v => set("photoPainting", v)} />
@@ -414,7 +420,7 @@ function Sheet({ title, onClose, onSave, saveLabel, children }) {
 
 /* ─── Unified spot modal (add + edit) ───────────────────────────── */
 const BLANK = { name:"", lat:"", lng:"", weather:"sunny", light:"Golden Hour Morning",
-                temp:"", notes:"", medium:"", paintedAt:"location", photoPainting:null, photoScene:null };
+                temp:"", notes:"", medium:"", paintedAt:"location", photoPainting:null, photoScene:null, photoLocation:null };
 
 function SpotModal({ initial, editingBucket, onSave, onClose }) {
   const isEdit    = !!initial;
@@ -567,7 +573,7 @@ function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPr
       marginLeft:6, verticalAlign:"middle",
     }}>{spot.paintedAt==="studio" ? "🏠 Studio" : "📍 On Location"}</span>
   );
-  const hasPhotos = !isBucket && (spot.photoPainting || spot.photoScene);
+  const hasPhotos = isBucket ? !!spot.photoLocation : (spot.photoPainting || spot.photoScene);
   return (
     <div onClick={() => onSelect(spot.id)} style={{
       padding:"13px 15px", borderRadius:13, cursor:"pointer", marginBottom:9, transition:"all 0.18s",
@@ -578,12 +584,16 @@ function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPr
       {/* Photo strip */}
       {hasPhotos && (
         <div style={{ display:"flex", gap:4, marginBottom:10 }}>
-          {[spot.photoPainting, spot.photoScene].filter(Boolean).map((p,i) => (
+          {(isBucket
+            ? [{ src:spot.photoLocation, label:"🏞 LOCATION" }]
+            : [spot.photoPainting && { src:spot.photoPainting, label:"🎨 PAINTING" },
+               spot.photoScene    && { src:spot.photoScene,    label:"🏞 SCENE" }].filter(Boolean)
+          ).map((p,i) => (
             <div key={i} style={{ flex:1, position:"relative" }}>
-              <img src={p} alt="" style={{ width:"100%", height:90, objectFit:"cover", borderRadius:8, display:"block" }} />
+              <img src={p.src} alt="" style={{ width:"100%", height:90, objectFit:"cover", borderRadius:8, display:"block" }} />
               <div style={{ position:"absolute", bottom:4, left:4, background:"rgba(59,42,26,0.65)",
                 borderRadius:4, padding:"2px 5px", fontSize:9, color:"#fff", fontFamily:"Georgia,serif" }}>
-                {i===0 ? "🎨 PAINTING" : "🏞 SCENE"}
+                {p.label}
               </div>
             </div>
           ))}
