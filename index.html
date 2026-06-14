@@ -220,10 +220,18 @@ function MapView({ spots, bucket, selectedId, onSelect }) {
 
     const addMarker = (item, isBucket) => {
       const sel = item.id === selectedId;
-      const m = L.circleMarker([item.lat, item.lng], isBucket
-        ? { radius:sel?13:9, fillColor:sel?"#2a9d8f":"#1a7a6e", color:"#e0f5f3", weight:2, fillOpacity:0.88, dashArray:"4 3" }
-        : { radius:sel?13:9, fillColor:sel?"#d4763b":"#7a5c3e",  color:"#f5efe6", weight:2, fillOpacity:0.92 }
-      ).addTo(map);
+      // gold = on location, brown = studio, teal = bucket list
+      const fillColor = isBucket
+        ? (sel ? "#2a9d8f" : "#1a7a6e")
+        : item.paintedAt === "studio"
+          ? (sel ? "#8B5E3C" : "#5c3d20")
+          : (sel ? "#e8b84b" : "#b8892a");
+      const borderColor = isBucket ? "#e0f5f3" : item.paintedAt === "studio" ? "#f5efe6" : "#fff8e8";
+      const m = L.circleMarker([item.lat, item.lng], {
+        radius: sel?13:9, fillColor, color: borderColor, weight:2,
+        fillOpacity: isBucket?0.88:0.92,
+        ...(isBucket ? { dashArray:"4 3" } : {})
+      }).addTo(map);
 
       // build popup with optional photos
       const photos = [item.photoPainting, item.photoScene].filter(Boolean);
@@ -236,7 +244,7 @@ function MapView({ spots, bucket, selectedId, onSelect }) {
       m.bindPopup(`<div style="font-family:'Georgia',serif;min-width:160px;max-width:220px">
         ${isBucket?`<span style="font-size:11px;color:#1a7a6e;font-weight:bold">BUCKET LIST</span><br/>`:""}
         <strong style="color:#3b2a1a">${item.name}</strong>
-        ${!isBucket?`<br/><span style="color:#7a5c3e;font-size:12px">${fmtDate(item.date)}</span><br/><span>${weatherLabel(item.weather)}</span>`:""}
+        ${!isBucket?`<br/><span style="color:#7a5c3e;font-size:12px">${fmtDate(item.date)}</span><br/><span>${weatherLabel(item.weather)}</span><br/><span style="font-size:11px;color:#9a7a5a">${item.paintedAt==="studio"?"🏠 Studio":"📍 On Location"}</span>`:""}
         ${item.notes?`<p style="margin:5px 0 0;font-size:12px;color:#555">${item.notes}</p>`:""}
         ${photoHtml}
       </div>`, { maxWidth:240 });
@@ -342,6 +350,20 @@ function FormFields({ form, setForm, isBucket }) {
           <label style={S.lbl}>MEDIUM (optional)</label>
           <input style={S.inp} value={form.medium} onChange={e=>set("medium",e.target.value)} placeholder="Oil, Watercolor, Pastel…" />
         </div>
+        <div>
+          <label style={S.lbl}>PAINTED WHERE?</label>
+          <div style={{ display:"flex", gap:6, padding:4, background:"#f0e8dc", borderRadius:12 }}>
+            {[["📍","On Location","location"],["🏠","In Studio","studio"]].map(([ico,lbl,val]) => (
+              <button key={val} type="button" onClick={() => set("paintedAt", val)} style={{
+                flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer",
+                fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", transition:"all 0.15s",
+                background: form.paintedAt===val ? "#fff"    : "transparent",
+                color:       form.paintedAt===val ? "#3b2a1a" : "#9a7a5a",
+                boxShadow:   form.paintedAt===val ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
+              }}>{ico} {lbl}</button>
+            ))}
+          </div>
+        </div>
       </>)}
 
       <div>
@@ -392,7 +414,7 @@ function Sheet({ title, onClose, onSave, saveLabel, children }) {
 
 /* ─── Unified spot modal (add + edit) ───────────────────────────── */
 const BLANK = { name:"", lat:"", lng:"", weather:"sunny", light:"Golden Hour Morning",
-                temp:"", notes:"", medium:"", photoPainting:null, photoScene:null };
+                temp:"", notes:"", medium:"", paintedAt:"location", photoPainting:null, photoScene:null };
 
 function SpotModal({ initial, editingBucket, onSave, onClose }) {
   const isEdit    = !!initial;
@@ -536,7 +558,15 @@ function CalendarView({ spots, onSelectSpot }) {
 
 /* ─── Spot card ─────────────────────────────────────────────────── */
 function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPromote }) {
-  const accent   = isBucket ? "#1a7a6e" : "#c46a2e";
+  const accent   = isBucket ? "#1a7a6e" : spot.paintedAt === "studio" ? "#5c3d20" : "#b8892a";
+  const paintedBadge = !isBucket && (
+    <span style={{ fontSize:10, padding:"2px 7px", borderRadius:10, fontFamily:"Georgia,serif",
+      background: spot.paintedAt==="studio" ? "#f0e8dc" : "#fff8e0",
+      color:       spot.paintedAt==="studio" ? "#5c3d20" : "#8a6010",
+      border: `1px solid ${spot.paintedAt==="studio" ? "#d6c4a8" : "#e8d080"}`,
+      marginLeft:6, verticalAlign:"middle",
+    }}>{spot.paintedAt==="studio" ? "🏠 Studio" : "📍 On Location"}</span>
+  );
   const hasPhotos = !isBucket && (spot.photoPainting || spot.photoScene);
   return (
     <div onClick={() => onSelect(spot.id)} style={{
@@ -562,7 +592,7 @@ function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPr
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>{spot.name}</div>
+          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>{spot.name}{paintedBadge}</div>
           {!isBucket && <div style={{ fontSize:12, color:"#9a7a5a", marginTop:2 }}>{fmtDate(spot.date)} · {weatherLabel(spot.weather)}</div>}
           {!isBucket && spot.light && <div style={{ fontSize:11, color:"#b09070", marginTop:1 }}>{spot.light}{spot.medium?` · ${spot.medium}`:""}</div>}
           {!isBucket && spot.temp  && <div style={{ fontSize:11, color:"#b09070" }}>🌡 {spot.temp}</div>}
@@ -657,7 +687,7 @@ function App() {
   const promote = id => {
     const b = bucket.find(x=>x.id===id); if (!b) return;
     setBucket(p=>p.filter(x=>x.id!==id));
-    setSpots(p=>[...p, { ...b, date:new Date().toISOString().slice(0,10), weather:"sunny", light:"Golden Hour Morning", temp:"", medium:"", photoPainting:null, photoScene:null }]);
+    setSpots(p=>[...p, { ...b, date:new Date().toISOString().slice(0,10), weather:"sunny", light:"Golden Hour Morning", temp:"", medium:"", paintedAt:"location", photoPainting:null, photoScene:null }]);
     setSelId(id); setTab("map");
   };
 
@@ -766,7 +796,7 @@ function App() {
               background:"rgba(255,253,247,0.93)", borderRadius:10, padding:"6px 10px",
               fontSize:11, color:"#3b2a1a", boxShadow:"0 2px 8px rgba(0,0,0,0.15)",
               display:"flex", flexDirection:"column", gap:4 }}>
-              {[["#7a5c3e","Painted"],["#1a7a6e","Bucket List"]].map(([c,l]) => (
+              {[["#b8892a","On Location"],["#5c3d20","Studio"],["#1a7a6e","Bucket List"]].map(([c,l]) => (
                 <div key={l} style={{ display:"flex", alignItems:"center", gap:6 }}>
                   <div style={{ width:9, height:9, borderRadius:"50%", background:c, flexShrink:0 }} /> {l}
                 </div>
