@@ -84,20 +84,78 @@ const S = {
   error: { background:"#fde8d8", color:"#a03a10", padding:"8px 12px", borderRadius:8, marginBottom:12, fontSize:13 },
 };
 
+/* ─── Storage helpers ───────────────────────────────────────────── */
+// Photos are stored separately (key+"_photos") as {id->photoObj}
+// to avoid hitting per-key size limits with base64 data.
+const PHOTO_KEYS = ["photoPainting","photoScene","photoLocation"];
+
+function stripPhotos(items) {
+  return items.map(item => {
+    const stripped = { ...item };
+    PHOTO_KEYS.forEach(k => { if (k in stripped) stripped[k] = null; });
+    return stripped;
+  });
+}
+
+function buildPhotoMap(items) {
+  const map = {};
+  items.forEach(item => {
+    const photos = {};
+    PHOTO_KEYS.forEach(k => { if (item[k]) photos[k] = item[k]; });
+    if (Object.keys(photos).length) map[item.id] = photos;
+  });
+  return map;
+}
+
+function mergePhotos(items, photoMap) {
+  return items.map(item => ({
+    ...item,
+    ...(photoMap[item.id] || {}),
+  }));
+}
+
+async function persistList(key, items) {
+  // Save metadata (no photos) and photos map separately
+  const meta      = stripPhotos(items);
+  const photoMap  = buildPhotoMap(items);
+  await window.storage.set(key,           JSON.stringify(meta));
+  await window.storage.set(key+"_photos", JSON.stringify(photoMap));
+}
+
+async function loadList(key) {
+  try {
+    const [metaRes, photoRes] = await Promise.all([
+      window.storage.get(key),
+      window.storage.get(key+"_photos"),
+    ]);
+    if (!metaRes?.value) return [];
+    const meta     = JSON.parse(metaRes.value);
+    const photoMap = photoRes?.value ? JSON.parse(photoRes.value) : {};
+    return mergePhotos(meta, photoMap);
+  } catch { return []; }
+}
+
 /* ─── Storage hook ──────────────────────────────────────────────── */
 function useStoredList(key) {
   const [list, setList]   = useState([]);
   const [ready, setReady] = useState(false);
+  const saveTimer = useRef(null);
+
+  // Load on mount
   useEffect(() => {
-    (async () => {
-      try { const r = await window.storage.get(key); if (r?.value) setList(JSON.parse(r.value)); } catch {}
-      setReady(true);
-    })();
+    loadList(key).then(data => { setList(data); setReady(true); });
   }, [key]);
+
+  // Debounced save — waits 400ms after last change before writing
   useEffect(() => {
     if (!ready) return;
-    try { window.storage.set(key, JSON.stringify(list)); } catch {}
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      persistList(key, list).catch(err => console.warn("Storage save failed:", err));
+    }, 400);
+    return () => clearTimeout(saveTimer.current);
   }, [list, ready, key]);
+
   return [list, setList];
 }
 
