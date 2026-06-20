@@ -37,6 +37,11 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+window.onerror=function(message,source,line,column,error){
+  alert("JS Error:\n"+message+"\nLine: "+line);
+};
+</script>
 <script type="text/babel">
 const { useState, useEffect, useRef, useMemo } = React;
 
@@ -73,7 +78,10 @@ const SUGGESTED_TAGS = ["Trees","Water","Urban","Mountains","Fields","Buildings"
   "Figures","Animals","Coast","Desert","Snow","Sunset","Sunrise","Night"];
 
 const fmtDate      = iso => new Date(iso).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});
-const weatherLabel = v   => WEATHER.find(w=>w.value===v)?.label ?? "";
+const weatherLabel = v => {
+  const match = WEATHER.find(w => w.value === v);
+  return match ? match.label : "";
+};
 const todayStr     = ()  => new Date().toISOString().slice(0,10);
 
 /* ─── Shared styles ─────────────────────────────────────────────── */
@@ -504,8 +512,8 @@ function SpotModal({ initial, editingBucket, onSave, onClose }) {
     if (isNaN(la)||isNaN(lo))           { setErr("Please enter valid coordinates."); return; }
     if (la<-90||la>90||lo<-180||lo>180) { setErr("Coordinates out of range."); return; }
     onSave({...form,lat:la,lng:lo,
-      id:initial?.id??Date.now().toString(),
-      createdAt:initial?.createdAt??new Date().toISOString()}, isBucket);
+      id:(initial && initial.id) ? initial.id : Date.now().toString(),
+      createdAt:(initial && initial.createdAt) ? initial.createdAt : new Date().toISOString()}, isBucket);
   };
 
   const title = isEdit?(editingBucket?"Edit Bucket List Spot":"Edit Painting Spot")
