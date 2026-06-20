@@ -1,0 +1,6 @@
+{
+  "name": "Plein Air Journal",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone"
+}
