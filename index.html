@@ -6,8 +6,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#3b2a1a" />
+  <meta name="description" content="Log your plein air painting locations, track sessions, and plan future spots." />
+  <link rel="manifest" href="manifest.json" />
   <title>Plein Air Journal</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css" />
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -17,21 +21,28 @@
     input[type="date"] { -webkit-appearance: none; }
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-thumb { background: #d6c4a8; border-radius: 4px; }
+    /* Cluster styles */
+    .pai-cluster { background: rgba(184,137,42,0.85); border: 2px solid #fff8e8; border-radius: 50%;
+      display:flex; align-items:center; justify-content:center;
+      font-family:Georgia,serif; font-weight:bold; color:#fff; }
+    .pai-cluster-sm { width:32px; height:32px; font-size:12px; }
+    .pai-cluster-md { width:40px; height:40px; font-size:14px; }
+    .pai-cluster-lg { width:50px; height:50px; font-size:16px; }
   </style>
 </head>
 <body>
 <div id="root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 /* ─── Storage ───────────────────────────────────────────────────── */
 const LS_SPOTS  = "pai-spots-v3";
 const LS_BUCKET = "pai-bucket-v3";
-
 function lsLoad(key) {
   try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
 }
@@ -56,8 +67,10 @@ const LIGHTS = [
   "Overcast Flat","Backlit","Side Lit","Dappled",
 ];
 const MONTHS = ["January","February","March","April","May","June",
-                "July","August","September","October","November","December"];
+  "July","August","September","October","November","December"];
 const DAYS = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+const SUGGESTED_TAGS = ["Trees","Water","Urban","Mountains","Fields","Buildings",
+  "Figures","Animals","Coast","Desert","Snow","Sunset","Sunrise","Night"];
 
 const fmtDate      = iso => new Date(iso).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});
 const weatherLabel = v   => WEATHER.find(w=>w.value===v)?.label ?? "";
@@ -78,177 +91,374 @@ const S = {
   err: { background:"#fde8d8", color:"#a03a10", padding:"8px 12px", borderRadius:8, marginBottom:12, fontSize:13 },
 };
 
+/* ─── Tag pill ──────────────────────────────────────────────────── */
+function TagPill({ tag, active, onClick, small }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: small ? "3px 9px" : "5px 12px",
+      borderRadius:20, border:"none", cursor:"pointer",
+      fontFamily:"Georgia,serif", fontSize: small ? 11 : 12,
+      background: active ? "#c46a2e" : "#f0e8dc",
+      color: active ? "#fff" : "#7a5c3e",
+      transition:"all 0.15s", whiteSpace:"nowrap",
+    }}>{tag}</button>
+  );
+}
+
+/* ─── Tag input field ───────────────────────────────────────────── */
+function TagField({ tags, onChange }) {
+  const [input, setInput] = useState("");
+  const allTags = tags || [];
+
+  const add = t => {
+    const clean = t.trim().replace(/,+$/,"").trim();
+    if (clean && !allTags.includes(clean)) onChange([...allTags, clean]);
+    setInput("");
+  };
+  const remove = t => onChange(allTags.filter(x=>x!==t));
+
+  return (
+    <div>
+      <label style={S.lbl}>TAGS (optional)</label>
+      {/* current tags */}
+      {allTags.length > 0 && (
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+          {allTags.map(t => (
+            <span key={t} style={{ display:"flex", alignItems:"center", gap:4, padding:"3px 10px",
+              borderRadius:20, background:"#c46a2e", color:"#fff",
+              fontFamily:"Georgia,serif", fontSize:12 }}>
+              {t}
+              <button onClick={()=>remove(t)} style={{ background:"none", border:"none", cursor:"pointer",
+                color:"rgba(255,255,255,0.8)", fontSize:14, padding:0, lineHeight:1 }}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      {/* text input */}
+      <input style={S.inp} value={input}
+        onChange={e=>setInput(e.target.value)}
+        onKeyDown={e=>{ if(e.key==="Enter"||e.key===","){ e.preventDefault(); add(input); }}}
+        placeholder="Type a tag and press Enter…" />
+      {/* suggestions */}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:7 }}>
+        {SUGGESTED_TAGS.filter(t=>!allTags.includes(t)).map(t=>(
+          <TagPill key={t} tag={t} active={false} onClick={()=>add(t)} small />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Map ───────────────────────────────────────────────────────── */
-function MapView({ spots, bucket, selectedId, onSelect }) {
+function MapView({ spots, bucket, selectedId, onSelect, filterTypes }) {
   const mapRef = useRef(null), instRef = useRef(null);
-  const [ready, setReady] = useState(!!window.L);
+  const clusterRef = useRef(null);
+  const [ready, setReady] = useState(!!(window.L && window.L.markerClusterGroup));
 
   useEffect(() => {
-    if (window.L) return;
-    const link = Object.assign(document.createElement("link"),
-      { rel:"stylesheet", href:"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" });
-    document.head.appendChild(link);
-    const s = Object.assign(document.createElement("script"),
-      { src:"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js", onload:()=>setReady(true) });
-    document.head.appendChild(s);
+    if (window.L && window.L.markerClusterGroup) return;
+    // Load Leaflet + MarkerCluster
+    const loadScript = src => new Promise(res => {
+      const s = document.createElement("script"); s.src = src; s.onload = res; document.head.appendChild(s);
+    });
+    const loadCSS = href => {
+      const l = document.createElement("link"); l.rel="stylesheet"; l.href=href; document.head.appendChild(l);
+    };
+    (async () => {
+      loadCSS("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css");
+      loadCSS("https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css");
+      loadCSS("https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css");
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js");
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js");
+      setReady(true);
+    })();
   }, []);
 
+  // Init map once
   useEffect(() => {
     if (!ready || !mapRef.current || instRef.current) return;
-    const L = window.L, all = [...spots,...bucket];
+    const L = window.L;
+    const all = [...spots,...bucket];
     const map = L.map(mapRef.current, { zoomControl:false })
-      .setView(all.length ? [all[all.length-1].lat,all[all.length-1].lng] : [39.5,-98.35], all.length ? 12 : 4);
+      .setView(all.length?[all[all.length-1].lat,all[all.length-1].lng]:[39.5,-98.35], all.length?12:4);
     L.control.zoom({ position:"bottomright" }).addTo(map);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution:"© OpenStreetMap" }).addTo(map);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap"}).addTo(map);
     instRef.current = map;
-    return () => { try { map.remove(); } catch {} instRef.current = null; };
+    return () => { try{map.remove();}catch{} instRef.current=null; clusterRef.current=null; };
   }, [ready]); // eslint-disable-line
 
+  // Update markers with clustering
   useEffect(() => {
     const map = instRef.current; if (!map) return;
     const L = window.L;
-    map.eachLayer(l => { if (l instanceof L.CircleMarker) map.removeLayer(l); });
+
+    // Remove old cluster layer
+    if (clusterRef.current) { map.removeLayer(clusterRef.current); clusterRef.current = null; }
+
+    const cluster = L.markerClusterGroup({
+      maxClusterRadius: 50,
+      iconCreateFunction: c => {
+        const n = c.getChildCount();
+        const sz = n < 5 ? "sm" : n < 15 ? "md" : "lg";
+        return L.divIcon({ html:`<div class="pai-cluster pai-cluster-${sz}">${n}</div>`,
+          className:"", iconSize:L.point(sz==="sm"?32:sz==="md"?40:50, sz==="sm"?32:sz==="md"?40:50) });
+      },
+    });
+
+    const visSpots  = filterTypes.includes("location") || filterTypes.includes("studio") ? spots  : [];
+    const visBucket = filterTypes.includes("bucket")                                      ? bucket : [];
+
+    // filter spots by paintedAt type
+    const filteredSpots = visSpots.filter(s =>
+      (s.paintedAt==="studio" && filterTypes.includes("studio")) ||
+      (s.paintedAt!=="studio" && filterTypes.includes("location"))
+    );
 
     const add = (item, isBucket) => {
       const sel = item.id === selectedId;
-      const fillColor = isBucket
-        ? (sel ? "#2a9d8f" : "#1a7a6e")
-        : item.paintedAt === "studio"
-          ? (sel ? "#8B5E3C" : "#5c3d20")
-          : (sel ? "#e8b84b" : "#b8892a");
-      const m = L.circleMarker([item.lat, item.lng], {
-        radius: sel?13:9, fillColor,
-        color: isBucket ? "#e0f5f3" : item.paintedAt==="studio" ? "#f5efe6" : "#fff8e8",
-        weight: 2, fillOpacity: isBucket?0.88:0.92,
-        ...(isBucket ? { dashArray:"4 3" } : {})
-      }).addTo(map);
-      m.bindPopup(`<div style="font-family:'Georgia',serif;min-width:150px">
-        ${isBucket ? `<span style="font-size:11px;color:#1a7a6e;font-weight:bold">BUCKET LIST</span><br/>` : ""}
+      const fillColor = isBucket ? (sel?"#2a9d8f":"#1a7a6e")
+        : item.paintedAt==="studio" ? (sel?"#8B5E3C":"#5c3d20")
+        : (sel?"#e8b84b":"#b8892a");
+      const marker = L.circleMarker([item.lat, item.lng], {
+        radius:sel?13:9, fillColor,
+        color:isBucket?"#e0f5f3":item.paintedAt==="studio"?"#f5efe6":"#fff8e8",
+        weight:2, fillOpacity:isBucket?0.88:0.92,
+        ...(isBucket?{dashArray:"4 3"}:{})
+      });
+      const tagHtml = (item.tags||[]).length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:5px">${(item.tags||[]).map(t=>`<span style="background:#f0e8dc;color:#7a5c3e;border-radius:10px;padding:1px 6px;font-size:10px">${t}</span>`).join("")}</div>`
+        : "";
+      marker.bindPopup(`<div style="font-family:'Georgia',serif;min-width:150px">
+        ${isBucket?`<span style="font-size:11px;color:#1a7a6e;font-weight:bold">BUCKET LIST</span><br/>`:""}
         <strong style="color:#3b2a1a">${item.name}</strong>
-        ${!isBucket ? `<br/><span style="color:#7a5c3e;font-size:12px">${fmtDate(item.date)}</span>
+        ${!isBucket?`<br/><span style="color:#7a5c3e;font-size:12px">${fmtDate(item.date)}</span>
           <br/><span>${weatherLabel(item.weather)}</span>
-          <br/><span style="font-size:11px;color:#9a7a5a">${item.paintedAt==="studio"?"🏠 Studio":"📍 On Location"}</span>` : ""}
-        ${item.notes ? `<p style="margin:5px 0 0;font-size:12px;color:#555">${item.notes}</p>` : ""}
+          <br/><span style="font-size:11px;color:#9a7a5a">${item.paintedAt==="studio"?"🏠 Studio":"📍 On Location"}</span>`:""}
+        ${item.notes?`<p style="margin:5px 0 0;font-size:12px;color:#555">${item.notes}</p>`:""}
+        ${tagHtml}
       </div>`);
-      m.on("click", () => onSelect(item.id));
+      marker.on("click", ()=>onSelect(item.id));
+      cluster.addLayer(marker);
     };
 
-    spots.forEach(s  => add(s, false));
-    bucket.forEach(b => add(b, true));
-    const all = [...spots,...bucket];
-    if (all.length === 1) map.setView([all[0].lat, all[0].lng], 13);
-    else if (all.length > 1) map.fitBounds(L.latLngBounds(all.map(s=>[s.lat,s.lng])), { padding:[40,40] });
-  }, [spots, bucket, selectedId]);
+    filteredSpots.forEach(s=>add(s,false));
+    visBucket.forEach(b=>add(b,true));
+    map.addLayer(cluster);
+    clusterRef.current = cluster;
+
+    const all = [...filteredSpots,...visBucket];
+    if (all.length===1) map.setView([all[0].lat,all[0].lng],13);
+    else if (all.length>1) map.fitBounds(L.latLngBounds(all.map(s=>[s.lat,s.lng])),{padding:[40,40]});
+  }, [spots, bucket, selectedId, filterTypes]);
 
   return (
-    <div style={{ position:"relative", height:"100%", width:"100%" }}>
-      {!ready && <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center",
-        justifyContent:"center", background:"#f5ece0", color:"#7a5c3e", fontFamily:"Georgia,serif" }}>Loading map…</div>}
-      <div ref={mapRef} style={{ height:"100%", width:"100%", borderRadius:14 }} />
+    <div style={{position:"relative",height:"100%",width:"100%"}}>
+      {!ready&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+        justifyContent:"center",background:"#f5ece0",color:"#7a5c3e",fontFamily:"Georgia,serif"}}>Loading map…</div>}
+      <div ref={mapRef} style={{height:"100%",width:"100%",borderRadius:14}}/>
+    </div>
+  );
+}
+
+/* ─── Stats view ────────────────────────────────────────────────── */
+function StatsView({ spots }) {
+  if (spots.length === 0) return (
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
+      color:"#b09070",fontStyle:"italic",fontSize:14,fontFamily:"Georgia,serif",padding:32,textAlign:"center"}}>
+      No painting sessions yet — add your first spot to see stats!
+    </div>
+  );
+
+  const total = spots.length;
+  const onLoc = spots.filter(s=>s.paintedAt!=="studio").length;
+  const studio = spots.filter(s=>s.paintedAt==="studio").length;
+
+  // Sessions by month
+  const byMonth = {};
+  spots.forEach(s => {
+    const k = s.date.slice(0,7);
+    byMonth[k] = (byMonth[k]||0) + 1;
+  });
+  const busiest = Object.entries(byMonth).sort((a,b)=>b[1]-a[1])[0];
+  const busiestLabel = busiest ? (() => {
+    const [yr,mo] = busiest[0].split("-");
+    return `${MONTHS[parseInt(mo)-1]} ${yr}`;
+  })() : "—";
+
+  // Weather breakdown
+  const byWeather = {};
+  spots.forEach(s => { byWeather[s.weather]=(byWeather[s.weather]||0)+1; });
+  const topWeather = Object.entries(byWeather).sort((a,b)=>b[1]-a[1])[0];
+
+  // Medium breakdown
+  const byMedium = {};
+  spots.filter(s=>s.medium).forEach(s=>{
+    const k=s.medium.trim();
+    byMedium[k]=(byMedium[k]||0)+1;
+  });
+  const topMedium = Object.entries(byMedium).sort((a,b)=>b[1]-a[1])[0];
+
+  // All tags
+  const tagCounts = {};
+  spots.forEach(s=>(s.tags||[]).forEach(t=>{ tagCounts[t]=(tagCounts[t]||0)+1; }));
+  const topTags = Object.entries(tagCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+
+  // Sessions per month for sparkline
+  const last6months = Array.from({length:6},(_,i)=>{
+    const d = new Date(); d.setMonth(d.getMonth()-5+i);
+    const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    return { label:MONTHS[d.getMonth()].slice(0,3), count:byMonth[k]||0 };
+  });
+  const maxCount = Math.max(...last6months.map(m=>m.count),1);
+
+  const StatCard = ({label,value,sub}) => (
+    <div style={{background:"#fffdf7",borderRadius:14,padding:"16px 18px",border:"1.5px solid #e8dcc8",flex:1,minWidth:0}}>
+      <div style={{fontSize:11,color:"#9a7a5a",letterSpacing:"0.1em",fontFamily:"Georgia,serif",marginBottom:4}}>{label}</div>
+      <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:28,color:"#3b2a1a",fontWeight:"bold",lineHeight:1}}>{value}</div>
+      {sub&&<div style={{fontSize:11,color:"#b09070",marginTop:4}}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,overflowY:"auto",padding:"14px 14px 20px"}}>
+      <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:20,color:"#3b2a1a",fontWeight:"bold",marginBottom:14}}>
+        Your Painting Stats
+      </div>
+
+      {/* Top row */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+        <StatCard label="TOTAL SESSIONS" value={total} />
+        <StatCard label="ON LOCATION" value={onLoc} sub={studio>0?`${studio} in studio`:undefined} />
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+        <StatCard label="BUSIEST MONTH" value={busiest?busiest[1]:"—"} sub={busiestLabel} />
+        <StatCard label="FAVOURITE WEATHER" value={topWeather?topWeather[1]:"—"} sub={topWeather?weatherLabel(topWeather[0]):"—"} />
+      </div>
+
+      {/* Sessions chart — last 6 months */}
+      <div style={{background:"#fffdf7",borderRadius:14,padding:"16px 18px",border:"1.5px solid #e8dcc8",marginBottom:14}}>
+        <div style={{fontSize:11,color:"#9a7a5a",letterSpacing:"0.1em",fontFamily:"Georgia,serif",marginBottom:12}}>LAST 6 MONTHS</div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:6,height:70}}>
+          {last6months.map(({label,count})=>(
+            <div key={label} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+              <div style={{fontSize:10,color:"#b09070",fontFamily:"Georgia,serif"}}>{count||""}</div>
+              <div style={{width:"100%",borderRadius:4,background:count>0?"#c46a2e":"#f0e8dc",
+                height:`${Math.max(4,Math.round((count/maxCount)*52))}px`,transition:"height 0.3s"}}/>
+              <div style={{fontSize:10,color:"#9a7a5a",fontFamily:"Georgia,serif"}}>{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Top medium */}
+      {topMedium && (
+        <div style={{background:"#fffdf7",borderRadius:14,padding:"14px 18px",border:"1.5px solid #e8dcc8",marginBottom:14}}>
+          <div style={{fontSize:11,color:"#9a7a5a",letterSpacing:"0.1em",fontFamily:"Georgia,serif",marginBottom:6}}>FAVOURITE MEDIUM</div>
+          <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:18,color:"#3b2a1a",fontWeight:"bold"}}>{topMedium[0]}</div>
+          <div style={{fontSize:12,color:"#b09070",marginTop:2}}>used in {topMedium[1]} session{topMedium[1]>1?"s":""}</div>
+        </div>
+      )}
+
+      {/* Tags */}
+      {topTags.length>0 && (
+        <div style={{background:"#fffdf7",borderRadius:14,padding:"14px 18px",border:"1.5px solid #e8dcc8"}}>
+          <div style={{fontSize:11,color:"#9a7a5a",letterSpacing:"0.1em",fontFamily:"Georgia,serif",marginBottom:10}}>TOP SUBJECTS</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+            {topTags.map(([tag,count])=>(
+              <span key={tag} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 12px",
+                borderRadius:20,background:"#f5e8d6",fontFamily:"Georgia,serif",fontSize:13,color:"#3b2a1a"}}>
+                {tag}
+                <span style={{fontSize:11,color:"#9a7a5a"}}>×{count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ─── Form fields ───────────────────────────────────────────────── */
 const BLANK = { name:"", lat:"", lng:"", weather:"sunny", light:"Golden Hour Morning",
-  temp:"", notes:"", medium:"", paintedAt:"location" };
+  temp:"", notes:"", medium:"", paintedAt:"location", tags:[] };
 
 function FormFields({ form, setForm, isBucket }) {
   const [gps, setGps] = useState("idle");
-  const set = (k,v) => setForm(f => ({ ...f, [k]:v }));
-
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
   const useGps = () => {
     if (!navigator.geolocation) return;
     setGps("locating");
     navigator.geolocation.getCurrentPosition(
-      pos => { setForm(f => ({ ...f, lat:pos.coords.latitude.toFixed(5), lng:pos.coords.longitude.toFixed(5) })); setGps("done"); },
-      () => setGps("error"),
-      { enableHighAccuracy:true, timeout:10000 }
+      pos=>{setForm(f=>({...f,lat:pos.coords.latitude.toFixed(5),lng:pos.coords.longitude.toFixed(5)}));setGps("done");},
+      ()=>setGps("error"),{enableHighAccuracy:true,timeout:10000}
     );
   };
-
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+    <div style={{display:"flex",flexDirection:"column",gap:13}}>
       <div>
         <label style={S.lbl}>LOCATION NAME</label>
-        <input style={S.inp} value={form.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Riverside Willows" />
+        <input style={S.inp} value={form.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Riverside Willows"/>
       </div>
-
-      {!isBucket && <div>
+      {!isBucket&&<div>
         <label style={S.lbl}>DATE</label>
-        <input style={S.inp} type="date" value={form.date} onChange={e=>set("date",e.target.value)} />
+        <input style={S.inp} type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
       </div>}
-
       <div>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
-          <span style={{ ...S.lbl, marginBottom:0 }}>COORDINATES</span>
-          <button type="button" onClick={useGps} style={{
-            display:"flex", alignItems:"center", gap:5, padding:"6px 12px", borderRadius:20,
-            border:"none", cursor:"pointer", fontFamily:"Georgia,serif", fontSize:12, fontWeight:"bold", transition:"all 0.2s",
-            background: gps==="done" ? "#d4edda" : gps==="locating" ? "#e8dcc8" : "linear-gradient(135deg,#c46a2e,#9a4820)",
-            color: gps==="done" ? "#2a6b3a" : gps==="locating" ? "#7a5c3e" : "#fff",
-          }}>
-            {gps==="locating" ? "⏳ Locating…" : gps==="done" ? "✓ Got it!" : "📍 Use My Location"}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+          <span style={{...S.lbl,marginBottom:0}}>COORDINATES</span>
+          <button type="button" onClick={useGps} style={{display:"flex",alignItems:"center",gap:5,
+            padding:"6px 12px",borderRadius:20,border:"none",cursor:"pointer",
+            fontFamily:"Georgia,serif",fontSize:12,fontWeight:"bold",transition:"all 0.2s",
+            background:gps==="done"?"#d4edda":gps==="locating"?"#e8dcc8":"linear-gradient(135deg,#c46a2e,#9a4820)",
+            color:gps==="done"?"#2a6b3a":gps==="locating"?"#7a5c3e":"#fff"}}>
+            {gps==="locating"?"⏳ Locating…":gps==="done"?"✓ Got it!":"📍 Use My Location"}
           </button>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-          <div>
-            <label style={S.lbl}>LATITUDE</label>
-            <input style={S.inp} type="text" value={form.lat} onChange={e=>set("lat",e.target.value)} placeholder="37.7749" />
-          </div>
-          <div>
-            <label style={S.lbl}>LONGITUDE</label>
-            <input style={S.inp} type="text" value={form.lng} onChange={e=>set("lng",e.target.value)} placeholder="-122.4194" />
-          </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div><label style={S.lbl}>LATITUDE</label>
+            <input style={S.inp} type="text" value={form.lat} onChange={e=>set("lat",e.target.value)} placeholder="37.7749"/></div>
+          <div><label style={S.lbl}>LONGITUDE</label>
+            <input style={S.inp} type="text" value={form.lng} onChange={e=>set("lng",e.target.value)} placeholder="-122.4194"/></div>
         </div>
-        <p style={{ marginTop:4, fontSize:11, color:"#b09070", lineHeight:1.5 }}>
+        <p style={{marginTop:4,fontSize:11,color:"#b09070",lineHeight:1.5}}>
           💡 On Google Maps, tap &amp; hold → tap the coordinates at the bottom.
         </p>
       </div>
-
-      {!isBucket && <>
-        <div>
-          <label style={S.lbl}>WEATHER</label>
+      {!isBucket&&<>
+        <div><label style={S.lbl}>WEATHER</label>
           <select style={S.inp} value={form.weather} onChange={e=>set("weather",e.target.value)}>
-            {WEATHER.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={S.lbl}>LIGHT QUALITY</label>
+            {WEATHER.map(w=><option key={w.value} value={w.value}>{w.label}</option>)}
+          </select></div>
+        <div><label style={S.lbl}>LIGHT QUALITY</label>
           <select style={S.inp} value={form.light} onChange={e=>set("light",e.target.value)}>
-            {LIGHTS.map(l => <option key={l}>{l}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={S.lbl}>TEMPERATURE (optional)</label>
-          <input style={S.inp} value={form.temp} onChange={e=>set("temp",e.target.value)} placeholder="e.g. 18°C / 65°F" />
-        </div>
-        <div>
-          <label style={S.lbl}>MEDIUM (optional)</label>
-          <input style={S.inp} value={form.medium} onChange={e=>set("medium",e.target.value)} placeholder="Oil, Watercolor, Pastel…" />
-        </div>
+            {LIGHTS.map(l=><option key={l}>{l}</option>)}
+          </select></div>
+        <div><label style={S.lbl}>TEMPERATURE (optional)</label>
+          <input style={S.inp} value={form.temp} onChange={e=>set("temp",e.target.value)} placeholder="e.g. 18°C / 65°F"/></div>
+        <div><label style={S.lbl}>MEDIUM (optional)</label>
+          <input style={S.inp} value={form.medium} onChange={e=>set("medium",e.target.value)} placeholder="Oil, Watercolor, Pastel…"/></div>
         <div>
           <label style={S.lbl}>PAINTED WHERE?</label>
-          <div style={{ display:"flex", gap:6, padding:4, background:"#f0e8dc", borderRadius:12 }}>
-            {[["📍","On Location","location"],["🏠","In Studio","studio"]].map(([ico,lbl,val]) => (
-              <button key={val} type="button" onClick={() => set("paintedAt",val)} style={{
-                flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer",
-                fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", transition:"all 0.15s",
-                background: form.paintedAt===val ? "#fff" : "transparent",
-                color:      form.paintedAt===val ? "#3b2a1a" : "#9a7a5a",
-                boxShadow:  form.paintedAt===val ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
-              }}>{ico} {lbl}</button>
+          <div style={{display:"flex",gap:6,padding:4,background:"#f0e8dc",borderRadius:12}}>
+            {[["📍","On Location","location"],["🏠","In Studio","studio"]].map(([ico,lbl,val])=>(
+              <button key={val} type="button" onClick={()=>set("paintedAt",val)} style={{
+                flex:1,padding:"8px 0",borderRadius:9,border:"none",cursor:"pointer",
+                fontFamily:"Georgia,serif",fontSize:13,fontWeight:"bold",transition:"all 0.15s",
+                background:form.paintedAt===val?"#fff":"transparent",
+                color:form.paintedAt===val?"#3b2a1a":"#9a7a5a",
+                boxShadow:form.paintedAt===val?"0 1px 6px rgba(0,0,0,0.1)":"none"}}>
+                {ico} {lbl}
+              </button>
             ))}
           </div>
         </div>
       </>}
-
-      <div>
-        <label style={S.lbl}>NOTES</label>
-        <textarea style={{ ...S.inp, minHeight:75, resize:"vertical" }}
+      <div><label style={S.lbl}>NOTES</label>
+        <textarea style={{...S.inp,minHeight:75,resize:"vertical"}}
           value={form.notes} onChange={e=>set("notes",e.target.value)}
-          placeholder={isBucket ? "Why paint here? Best time of year…" : "What inspired you? Challenges, discoveries…"} />
+          placeholder={isBucket?"Why paint here? Best time of year…":"What inspired you? Challenges, discoveries…"}/>
       </div>
+      <TagField tags={form.tags||[]} onChange={v=>set("tags",v)}/>
     </div>
   );
 }
@@ -256,21 +466,21 @@ function FormFields({ form, setForm, isBucket }) {
 /* ─── Bottom sheet ──────────────────────────────────────────────── */
 function Sheet({ title, onClose, onSave, saveLabel, children }) {
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(30,18,8,0.6)", zIndex:1000,
-      display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
-      <div style={{ background:"#fffdf7", borderRadius:"20px 20px 0 0", width:"100%", maxWidth:560,
-        boxShadow:"0 -8px 40px rgba(60,30,10,0.25)", maxHeight:"88vh", display:"flex", flexDirection:"column" }}>
-        <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 2px" }}>
-          <div style={{ width:40, height:4, borderRadius:2, background:"#d6c4a8" }} />
+    <div style={{position:"fixed",inset:0,background:"rgba(30,18,8,0.6)",zIndex:1000,
+      display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"#fffdf7",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:560,
+        boxShadow:"0 -8px 40px rgba(60,30,10,0.25)",maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
+        <div style={{display:"flex",justifyContent:"center",padding:"10px 0 2px"}}>
+          <div style={{width:40,height:4,borderRadius:2,background:"#d6c4a8"}}/>
         </div>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 20px 12px" }}>
-          <h2 style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:20, color:"#3b2a1a", margin:0 }}>{title}</h2>
-          <button onClick={onClose} style={{ background:"#f0e8dc", border:"none", cursor:"pointer",
-            borderRadius:"50%", width:30, height:30, fontSize:15, color:"#7a5c3e",
-            display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 20px 12px"}}>
+          <h2 style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:20,color:"#3b2a1a",margin:0}}>{title}</h2>
+          <button onClick={onClose} style={{background:"#f0e8dc",border:"none",cursor:"pointer",
+            borderRadius:"50%",width:30,height:30,fontSize:15,color:"#7a5c3e",
+            display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
         </div>
-        <div style={{ overflowY:"auto", flex:1, padding:"0 20px 8px" }}>{children}</div>
-        <div style={{ display:"flex", gap:10, padding:"12px 20px 16px", borderTop:"1px solid #ede3d5" }}>
+        <div style={{overflowY:"auto",flex:1,padding:"0 20px 8px"}}>{children}</div>
+        <div style={{display:"flex",gap:10,padding:"12px 20px 16px",borderTop:"1px solid #ede3d5"}}>
           <button onClick={onClose} style={S.cancelBtn}>Cancel</button>
           <button onClick={onSave}  style={S.saveBtn}>{saveLabel}</button>
         </div>
@@ -282,10 +492,10 @@ function Sheet({ title, onClose, onSave, saveLabel, children }) {
 /* ─── Spot modal ────────────────────────────────────────────────── */
 function SpotModal({ initial, editingBucket, onSave, onClose }) {
   const isEdit = !!initial;
-  const [isBucket, setIsBucket] = useState(editingBucket ?? false);
+  const [isBucket, setIsBucket] = useState(editingBucket??false);
   const [form, setForm] = useState(isEdit
-    ? { ...BLANK, ...initial, lat:String(initial.lat), lng:String(initial.lng) }
-    : { ...BLANK, date:todayStr() });
+    ? {...BLANK,...initial,lat:String(initial.lat),lng:String(initial.lng)}
+    : {...BLANK,date:todayStr()});
   const [err, setErr] = useState("");
 
   const handleSave = () => {
@@ -293,108 +503,90 @@ function SpotModal({ initial, editingBucket, onSave, onClose }) {
     const la=parseFloat(form.lat), lo=parseFloat(form.lng);
     if (isNaN(la)||isNaN(lo))           { setErr("Please enter valid coordinates."); return; }
     if (la<-90||la>90||lo<-180||lo>180) { setErr("Coordinates out of range."); return; }
-    onSave({ ...form, lat:la, lng:lo,
-      id: initial?.id ?? Date.now().toString(),
-      createdAt: initial?.createdAt ?? new Date().toISOString() }, isBucket);
+    onSave({...form,lat:la,lng:lo,
+      id:initial?.id??Date.now().toString(),
+      createdAt:initial?.createdAt??new Date().toISOString()}, isBucket);
   };
 
-  const title = isEdit ? (editingBucket ? "Edit Bucket List Spot" : "Edit Painting Spot")
-                       : (isBucket      ? "New Bucket List Spot"  : "New Painting Spot");
+  const title = isEdit?(editingBucket?"Edit Bucket List Spot":"Edit Painting Spot")
+                      :(isBucket?"New Bucket List Spot":"New Painting Spot");
   return (
-    <Sheet title={title} onClose={onClose} onSave={handleSave} saveLabel={isEdit ? "Save Changes" : "Save"}>
-      {!isEdit && (
-        <div style={{ display:"flex", gap:6, marginBottom:14, padding:4, background:"#f0e8dc", borderRadius:12 }}>
-          {[["🎨","Painted",false],["⭐","Bucket List",true]].map(([ico,lbl,val]) => (
-            <button key={String(val)} onClick={() => setIsBucket(val)} style={{
-              flex:1, padding:"8px 0", borderRadius:9, border:"none", cursor:"pointer",
-              fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", transition:"all 0.15s",
-              background: isBucket===val ? "#fff"    : "transparent",
-              color:      isBucket===val ? "#3b2a1a" : "#9a7a5a",
-              boxShadow:  isBucket===val ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
-            }}>{ico} {lbl}</button>
+    <Sheet title={title} onClose={onClose} onSave={handleSave} saveLabel={isEdit?"Save Changes":"Save"}>
+      {!isEdit&&(
+        <div style={{display:"flex",gap:6,marginBottom:14,padding:4,background:"#f0e8dc",borderRadius:12}}>
+          {[["🎨","Painted",false],["⭐","Bucket List",true]].map(([ico,lbl,val])=>(
+            <button key={String(val)} onClick={()=>setIsBucket(val)} style={{
+              flex:1,padding:"8px 0",borderRadius:9,border:"none",cursor:"pointer",
+              fontFamily:"Georgia,serif",fontSize:13,fontWeight:"bold",transition:"all 0.15s",
+              background:isBucket===val?"#fff":"transparent",color:isBucket===val?"#3b2a1a":"#9a7a5a",
+              boxShadow:isBucket===val?"0 1px 6px rgba(0,0,0,0.1)":"none"}}>
+              {ico} {lbl}
+            </button>
           ))}
         </div>
       )}
-      {err && <div style={S.err}>{err}</div>}
-      <FormFields form={form} setForm={setForm} isBucket={isBucket} />
+      {err&&<div style={S.err}>{err}</div>}
+      <FormFields form={form} setForm={setForm} isBucket={isBucket}/>
     </Sheet>
   );
 }
 
 /* ─── Calendar ──────────────────────────────────────────────────── */
 function CalendarView({ spots, onSelectSpot }) {
-  const today = new Date();
-  const [yr,setYr] = useState(today.getFullYear());
-  const [mo,setMo] = useState(today.getMonth());
-  const [sel,setSel] = useState(null);
-
-  const byDate = {};
-  spots.forEach(s => { const k=s.date.slice(0,10); (byDate[k]=byDate[k]||[]).push(s); });
-
-  const pad     = n => String(n).padStart(2,"0");
-  const keyFor  = d => `${yr}-${pad(mo+1)}-${pad(d)}`;
-  const firstDay    = new Date(yr,mo,1).getDay();
-  const daysInMonth = new Date(yr,mo+1,0).getDate();
-  const todaySt     = today.toISOString().slice(0,10);
-
-  const prevMo = () => { setSel(null); mo===0  ? (setMo(11),setYr(y=>y-1)) : setMo(m=>m-1); };
-  const nextMo = () => { setSel(null); mo===11 ? (setMo(0), setYr(y=>y+1)) : setMo(m=>m+1); };
-
-  const cells    = [...Array(firstDay).fill(null), ...Array(daysInMonth).fill(0).map((_,i)=>i+1)];
-  const selKey   = sel ? keyFor(sel) : null;
-  const selSpots = selKey ? (byDate[selKey]||[]) : [];
-
+  const today=new Date();
+  const [yr,setYr]=useState(today.getFullYear()),[mo,setMo]=useState(today.getMonth()),[sel,setSel]=useState(null);
+  const byDate={};
+  spots.forEach(s=>{const k=s.date.slice(0,10);(byDate[k]=byDate[k]||[]).push(s);});
+  const pad=n=>String(n).padStart(2,"0"),keyFor=d=>`${yr}-${pad(mo+1)}-${pad(d)}`;
+  const firstDay=new Date(yr,mo,1).getDay(),dim=new Date(yr,mo+1,0).getDate(),todaySt=today.toISOString().slice(0,10);
+  const prevMo=()=>{setSel(null);mo===0?(setMo(11),setYr(y=>y-1)):setMo(m=>m-1);};
+  const nextMo=()=>{setSel(null);mo===11?(setMo(0),setYr(y=>y+1)):setMo(m=>m+1);};
+  const cells=[...Array(firstDay).fill(null),...Array(dim).fill(0).map((_,i)=>i+1)];
+  const selKey=sel?keyFor(sel):null,selSpots=selKey?(byDate[selKey]||[]):[];
   return (
-    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", padding:"14px 14px 8px" }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-        <button onClick={prevMo} style={{ background:"#f0e8dc", border:"none", borderRadius:10, width:36, height:36,
-          fontSize:20, cursor:"pointer", color:"#7a5c3e", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</button>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:20, color:"#3b2a1a", fontWeight:"bold" }}>{MONTHS[mo]}</div>
-          <div style={{ fontSize:12, color:"#9a7a5a" }}>{yr}</div>
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"14px 14px 8px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+        <button onClick={prevMo} style={{background:"#f0e8dc",border:"none",borderRadius:10,width:36,height:36,fontSize:20,cursor:"pointer",color:"#7a5c3e",display:"flex",alignItems:"center",justifyContent:"center"}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:20,color:"#3b2a1a",fontWeight:"bold"}}>{MONTHS[mo]}</div>
+          <div style={{fontSize:12,color:"#9a7a5a"}}>{yr}</div>
         </div>
-        <button onClick={nextMo} style={{ background:"#f0e8dc", border:"none", borderRadius:10, width:36, height:36,
-          fontSize:20, cursor:"pointer", color:"#7a5c3e", display:"flex", alignItems:"center", justifyContent:"center" }}>›</button>
+        <button onClick={nextMo} style={{background:"#f0e8dc",border:"none",borderRadius:10,width:36,height:36,fontSize:20,cursor:"pointer",color:"#7a5c3e",display:"flex",alignItems:"center",justifyContent:"center"}}>›</button>
       </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", marginBottom:4 }}>
-        {DAYS.map(d => <div key={d} style={{ textAlign:"center", fontSize:11, color:"#b09070", fontWeight:"bold", padding:"2px 0" }}>{d}</div>)}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:4}}>
+        {DAYS.map(d=><div key={d} style={{textAlign:"center",fontSize:11,color:"#b09070",fontWeight:"bold",padding:"2px 0"}}>{d}</div>)}
       </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:3 }}>
-        {cells.map((day,i) => {
-          if (!day) return <div key={"e"+i}/>;
-          const key=keyFor(day), ds=byDate[key]||[], has=ds.length>0, isToday=key===todaySt, isSel=day===sel;
-          return (
-            <div key={key} onClick={() => setSel(isSel?null:day)} style={{
-              aspectRatio:"1", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-              borderRadius:10, cursor:has?"pointer":"default", transition:"all 0.15s", position:"relative",
-              background: isSel?"#c46a2e": isToday?"#f0e8dc":"transparent",
-              border: isToday&&!isSel ? "1.5px solid #d6b898" : "1.5px solid transparent",
-            }}>
-              <span style={{ fontSize:14, fontFamily:"Georgia,serif",
-                color:isSel?"#fff":isToday?"#c46a2e":"#3b2a1a", fontWeight:isToday?"bold":"normal" }}>{day}</span>
-              {has && <div style={{ position:"absolute", bottom:3, display:"flex", gap:2 }}>
-                {ds.slice(0,3).map((_,j) => <div key={j} style={{ width:4, height:4, borderRadius:"50%",
-                  background:isSel?"rgba(255,255,255,0.85)":"#c46a2e" }}/>)}
-              </div>}
-            </div>
-          );
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+        {cells.map((day,i)=>{
+          if(!day) return <div key={"e"+i}/>;
+          const key=keyFor(day),ds=byDate[key]||[],has=ds.length>0,isToday=key===todaySt,isSel=day===sel;
+          return <div key={key} onClick={()=>setSel(isSel?null:day)} style={{
+            aspectRatio:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            borderRadius:10,cursor:has?"pointer":"default",transition:"all 0.15s",position:"relative",
+            background:isSel?"#c46a2e":isToday?"#f0e8dc":"transparent",
+            border:isToday&&!isSel?"1.5px solid #d6b898":"1.5px solid transparent"}}>
+            <span style={{fontSize:14,fontFamily:"Georgia,serif",color:isSel?"#fff":isToday?"#c46a2e":"#3b2a1a",fontWeight:isToday?"bold":"normal"}}>{day}</span>
+            {has&&<div style={{position:"absolute",bottom:3,display:"flex",gap:2}}>
+              {ds.slice(0,3).map((_,j)=><div key={j} style={{width:4,height:4,borderRadius:"50%",background:isSel?"rgba(255,255,255,0.85)":"#c46a2e"}}/>)}
+            </div>}
+          </div>;
         })}
       </div>
-
-      <div style={{ flex:1, overflowY:"auto", marginTop:12 }}>
-        {sel && selSpots.length===0 && <div style={{ textAlign:"center", color:"#b09070", fontSize:13, padding:"16px 0", fontStyle:"italic" }}>No painting sessions this day.</div>}
-        {selSpots.map(s => (
-          <div key={s.id} onClick={() => onSelectSpot(s.id)}
-            style={{ padding:"11px 13px", borderRadius:12, background:"#fffdf7", border:"1.5px solid #e8dcc8", marginBottom:8, cursor:"pointer" }}>
-            <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>{s.name}</div>
-            <div style={{ fontSize:13, color:"#9a7a5a", marginTop:2 }}>{weatherLabel(s.weather)}{s.light?` · ${s.light}`:""}</div>
-            {s.medium && <div style={{ fontSize:12, color:"#b09070" }}>{s.medium}</div>}
-            {s.notes  && <div style={{ fontSize:12, color:"#6b5040", marginTop:4, fontStyle:"italic" }}>"{s.notes.slice(0,80)}{s.notes.length>80?"…":""}"</div>}
+      <div style={{flex:1,overflowY:"auto",marginTop:12}}>
+        {sel&&selSpots.length===0&&<div style={{textAlign:"center",color:"#b09070",fontSize:13,padding:"16px 0",fontStyle:"italic"}}>No painting sessions this day.</div>}
+        {selSpots.map(s=>(
+          <div key={s.id} onClick={()=>onSelectSpot(s.id)}
+            style={{padding:"11px 13px",borderRadius:12,background:"#fffdf7",border:"1.5px solid #e8dcc8",marginBottom:8,cursor:"pointer"}}>
+            <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:15,color:"#3b2a1a",fontWeight:"bold"}}>{s.name}</div>
+            <div style={{fontSize:13,color:"#9a7a5a",marginTop:2}}>{weatherLabel(s.weather)}{s.light?` · ${s.light}`:""}</div>
+            {s.medium&&<div style={{fontSize:12,color:"#b09070"}}>{s.medium}</div>}
+            {(s.tags||[]).length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>
+              {s.tags.map(t=><span key={t} style={{fontSize:10,padding:"2px 7px",borderRadius:10,background:"#f0e8dc",color:"#7a5c3e"}}>{t}</span>)}
+            </div>}
+            {s.notes&&<div style={{fontSize:12,color:"#6b5040",marginTop:4,fontStyle:"italic"}}>"{s.notes.slice(0,80)}{s.notes.length>80?"…":""}"</div>}
           </div>
         ))}
-        {!sel && <div style={{ textAlign:"center", color:"#b09070", fontSize:13, padding:"12px 0", fontStyle:"italic" }}>Tap a day to see your sessions</div>}
+        {!sel&&<div style={{textAlign:"center",color:"#b09070",fontSize:13,padding:"12px 0",fontStyle:"italic"}}>Tap a day to see your sessions</div>}
       </div>
     </div>
   );
@@ -402,35 +594,36 @@ function CalendarView({ spots, onSelectSpot }) {
 
 /* ─── Spot card ─────────────────────────────────────────────────── */
 function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPromote }) {
-  const accent = isBucket ? "#1a7a6e" : spot.paintedAt==="studio" ? "#5c3d20" : "#b8892a";
-  const badge  = !isBucket && (
-    <span style={{ fontSize:10, padding:"2px 7px", borderRadius:10, fontFamily:"Georgia,serif", marginLeft:6, verticalAlign:"middle",
-      background: spot.paintedAt==="studio" ? "#f0e8dc" : "#fff8e0",
-      color:      spot.paintedAt==="studio" ? "#5c3d20" : "#8a6010",
-      border:    `1px solid ${spot.paintedAt==="studio" ? "#d6c4a8" : "#e8d080"}`,
-    }}>{spot.paintedAt==="studio" ? "🏠 Studio" : "📍 On Location"}</span>
+  const accent=isBucket?"#1a7a6e":spot.paintedAt==="studio"?"#5c3d20":"#b8892a";
+  const badge=!isBucket&&(
+    <span style={{fontSize:10,padding:"2px 7px",borderRadius:10,fontFamily:"Georgia,serif",marginLeft:6,verticalAlign:"middle",
+      background:spot.paintedAt==="studio"?"#f0e8dc":"#fff8e0",
+      color:spot.paintedAt==="studio"?"#5c3d20":"#8a6010",
+      border:`1px solid ${spot.paintedAt==="studio"?"#d6c4a8":"#e8d080"}`}}>
+      {spot.paintedAt==="studio"?"🏠 Studio":"📍 On Location"}
+    </span>
   );
   return (
-    <div onClick={() => onSelect(spot.id)} style={{
-      padding:"13px 15px", borderRadius:13, cursor:"pointer", marginBottom:9, transition:"all 0.18s",
-      background: isSelected ? (isBucket?"#e0f5f3":"#f5e8d6") : "#fffdf7",
-      border: `1.5px solid ${isSelected ? (isBucket?"#2a9d8f":"#c46a2e") : "#e8dcc8"}`,
-      boxShadow: isSelected ? "0 4px 14px rgba(0,0,0,0.09)" : "none",
-    }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:15, color:"#3b2a1a", fontWeight:"bold" }}>
-            {spot.name}{badge}
-          </div>
-          {!isBucket && <div style={{ fontSize:12, color:"#9a7a5a", marginTop:2 }}>{fmtDate(spot.date)} · {weatherLabel(spot.weather)}</div>}
-          {!isBucket && spot.light && <div style={{ fontSize:11, color:"#b09070", marginTop:1 }}>{spot.light}{spot.medium?` · ${spot.medium}`:""}</div>}
-          {!isBucket && spot.temp  && <div style={{ fontSize:11, color:"#b09070" }}>🌡 {spot.temp}</div>}
-          {spot.notes && <div style={{ fontSize:12, color:"#6b5040", marginTop:5, fontStyle:"italic", lineHeight:1.4 }}>"{spot.notes.slice(0,100)}{spot.notes.length>100?"…":""}"</div>}
+    <div onClick={()=>onSelect(spot.id)} style={{padding:"13px 15px",borderRadius:13,cursor:"pointer",marginBottom:9,
+      transition:"all 0.18s",
+      background:isSelected?(isBucket?"#e0f5f3":"#f5e8d6"):"#fffdf7",
+      border:`1.5px solid ${isSelected?(isBucket?"#2a9d8f":"#c46a2e"):"#e8dcc8"}`,
+      boxShadow:isSelected?"0 4px 14px rgba(0,0,0,0.09)":"none"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:15,color:"#3b2a1a",fontWeight:"bold"}}>{spot.name}{badge}</div>
+          {!isBucket&&<div style={{fontSize:12,color:"#9a7a5a",marginTop:2}}>{fmtDate(spot.date)} · {weatherLabel(spot.weather)}</div>}
+          {!isBucket&&spot.light&&<div style={{fontSize:11,color:"#b09070",marginTop:1}}>{spot.light}{spot.medium?` · ${spot.medium}`:""}</div>}
+          {!isBucket&&spot.temp&&<div style={{fontSize:11,color:"#b09070"}}>🌡 {spot.temp}</div>}
+          {(spot.tags||[]).length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>
+            {spot.tags.map(t=><span key={t} style={{fontSize:10,padding:"2px 7px",borderRadius:10,background:"#f0e8dc",color:"#7a5c3e"}}>{t}</span>)}
+          </div>}
+          {spot.notes&&<div style={{fontSize:12,color:"#6b5040",marginTop:5,fontStyle:"italic",lineHeight:1.4}}>"{spot.notes.slice(0,100)}{spot.notes.length>100?"…":""}"</div>}
         </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:6, paddingLeft:10, flexShrink:0 }}>
-          <button onClick={e=>{e.stopPropagation();onEdit(spot.id);}}   style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,color:accent,padding:0 }}>✏️</button>
-          {isBucket && <button onClick={e=>{e.stopPropagation();onPromote(spot.id);}} style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,padding:0 }} title="Mark as painted">🎨</button>}
-          <button onClick={e=>{e.stopPropagation();onDelete(spot.id);}} style={{ background:"none",border:"none",cursor:"pointer",fontSize:15,color:"#c8a88a",padding:0 }}>🗑</button>
+        <div style={{display:"flex",flexDirection:"column",gap:6,paddingLeft:10,flexShrink:0}}>
+          <button onClick={e=>{e.stopPropagation();onEdit(spot.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:15,color:accent,padding:0}}>✏️</button>
+          {isBucket&&<button onClick={e=>{e.stopPropagation();onPromote(spot.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:15,padding:0}} title="Mark as painted">🎨</button>}
+          <button onClick={e=>{e.stopPropagation();onDelete(spot.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:15,color:"#c8a88a",padding:0}}>🗑</button>
         </div>
       </div>
     </div>
@@ -438,216 +631,236 @@ function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPr
 }
 
 /* ─── Export / Import ───────────────────────────────────────────── */
-function dl(blob, name) {
-  Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:name }).click();
-}
+function dl(blob,name){Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:name}).click();}
 
-function exportCSV(spots, bucket) {
-  const esc = v => `"${String(v||"").replace(/"/g,'""')}"`;
-  const rows = [
-    ["Type","Name","Date","Lat","Lng","Weather","Light","Temp","Medium","PaintedAt","Notes"].join(","),
-    ...spots.map(s  => ["Painted",    s.name,s.date,s.lat,s.lng,weatherLabel(s.weather),s.light||"",s.temp||"",s.medium||"",s.paintedAt||"location",s.notes||""].map(esc).join(",")),
-    ...bucket.map(b => ["Bucket List",b.name,"",    b.lat,b.lng,"","","","","",b.notes||""].map(esc).join(",")),
+function exportCSV(spots,bucket){
+  const esc=v=>`"${String(v||"").replace(/"/g,'""')}"`;
+  const rows=[
+    ["Type","Name","Date","Lat","Lng","Weather","Light","Temp","Medium","PaintedAt","Tags","Notes"].join(","),
+    ...spots.map(s=>["Painted",s.name,s.date,s.lat,s.lng,weatherLabel(s.weather),s.light||"",s.temp||"",s.medium||"",s.paintedAt||"location",(s.tags||[]).join("|"),s.notes||""].map(esc).join(",")),
+    ...bucket.map(b=>["Bucket List",b.name,"",b.lat,b.lng,"","","","","",(b.tags||[]).join("|"),b.notes||""].map(esc).join(",")),
   ];
-  dl(new Blob([rows.join("\n")], { type:"text/csv" }), `plein-air-${todayStr()}.csv`);
+  dl(new Blob([rows.join("\n")],{type:"text/csv"}),`plein-air-${todayStr()}.csv`);
 }
 
-function exportJSON(spots, bucket) {
-  dl(new Blob([JSON.stringify({ version:3, exportedAt:new Date().toISOString(), spots, bucket }, null, 2)],
-    { type:"application/json" }), `plein-air-backup-${todayStr()}.json`);
+function exportJSON(spots,bucket){
+  dl(new Blob([JSON.stringify({version:4,exportedAt:new Date().toISOString(),spots,bucket},null,2)],
+    {type:"application/json"}),`plein-air-backup-${todayStr()}.json`);
 }
 
-function importJSON(file, onSuccess, onError) {
-  const r = new FileReader();
-  r.onload = e => {
-    try {
-      const d = JSON.parse(e.target.result);
-      if (!Array.isArray(d.spots)||!Array.isArray(d.bucket)) throw new Error("Invalid format.");
-      // Strip any photo fields that might exist in old backups
-      const clean = arr => arr.map(item => {
-        const c = {...item};
-        ["photoPainting","photoScene","photoLocation"].forEach(f => delete c[f]);
-        return c;
-      });
-      onSuccess(clean(d.spots), clean(d.bucket));
-    } catch(err) { onError(err.message||"Could not read file."); }
+function importJSON(file,onSuccess,onError){
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const d=JSON.parse(e.target.result);
+      if(!Array.isArray(d.spots)||!Array.isArray(d.bucket)) throw new Error("Invalid format.");
+      onSuccess(d.spots,d.bucket);
+    }catch(err){onError(err.message||"Could not read file.");}
   };
   r.readAsText(file);
 }
 
 /* ─── App ───────────────────────────────────────────────────────── */
 function App() {
-  const [spots,    setSpots]    = useState(() => lsLoad(LS_SPOTS));
-  const [bucket,   setBucket]   = useState(() => lsLoad(LS_BUCKET));
+  const [spots,    setSpots]    = useState(()=>lsLoad(LS_SPOTS));
+  const [bucket,   setBucket]   = useState(()=>lsLoad(LS_BUCKET));
   const [selId,    setSelId]    = useState(null);
   const [modal,    setModal]    = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [toast,    setToast]    = useState(null);
   const [search,   setSearch]   = useState("");
   const [tab,      setTab]      = useState("map");
+  // Map filter: which types to show
+  const [filterTypes, setFilterTypes] = useState(["location","studio","bucket"]);
+  // Tag filter for journal
+  const [activeTag, setActiveTag] = useState(null);
   const fileRef = useRef(null);
 
-  useEffect(() => { lsSave(LS_SPOTS,  spots);  }, [spots]);
-  useEffect(() => { lsSave(LS_BUCKET, bucket); }, [bucket]);
+  useEffect(()=>{lsSave(LS_SPOTS,spots);},[spots]);
+  useEffect(()=>{lsSave(LS_BUCKET,bucket);},[bucket]);
 
-  const filt = arr => arr.filter(s =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    (s.notes||"").toLowerCase().includes(search.toLowerCase())
+  // All unique tags across spots
+  const allTags = useMemo(()=>{
+    const s=new Set();
+    spots.forEach(sp=>(sp.tags||[]).forEach(t=>s.add(t)));
+    return [...s].sort();
+  },[spots]);
+
+  const filt = arr => arr.filter(s=>
+    (s.name.toLowerCase().includes(search.toLowerCase()) ||
+    (s.notes||"").toLowerCase().includes(search.toLowerCase())) &&
+    (activeTag ? (s.tags||[]).includes(activeTag) : true)
   );
 
-  const handleSave = (item, isBkt) => {
-    const upsert = prev => prev.some(x=>x.id===item.id) ? prev.map(x=>x.id===item.id?item:x) : [...prev,item];
-    if (isBkt) { setBucket(upsert); setSpots(p=>p.filter(x=>x.id!==item.id)); }
-    else        { setSpots(upsert); setBucket(p=>p.filter(x=>x.id!==item.id)); }
-    setSelId(item.id); setModal(null); setTab("map");
+  const toggleFilter = type => setFilterTypes(prev=>
+    prev.includes(type) ? (prev.length>1?prev.filter(t=>t!==type):prev) : [...prev,type]
+  );
+
+  const handleSave=(item,isBkt)=>{
+    const upsert=prev=>prev.some(x=>x.id===item.id)?prev.map(x=>x.id===item.id?item:x):[...prev,item];
+    if(isBkt){setBucket(upsert);setSpots(p=>p.filter(x=>x.id!==item.id));}
+    else{setSpots(upsert);setBucket(p=>p.filter(x=>x.id!==item.id));}
+    setSelId(item.id);setModal(null);setTab("map");
   };
 
-  const openEdit = id => {
-    const s=spots.find(x=>x.id===id), b=bucket.find(x=>x.id===id);
-    if (s) setModal({ initial:s, editingBucket:false });
-    if (b) setModal({ initial:b, editingBucket:true  });
+  const openEdit=id=>{
+    const s=spots.find(x=>x.id===id),b=bucket.find(x=>x.id===id);
+    if(s)setModal({initial:s,editingBucket:false});
+    if(b)setModal({initial:b,editingBucket:true});
   };
 
-  const handleDelete = id => {
-    if (!confirm("Remove this spot?")) return;
+  const handleDelete=id=>{
+    if(!confirm("Remove this spot?"))return;
     setSpots(p=>p.filter(s=>s.id!==id));
     setBucket(p=>p.filter(b=>b.id!==id));
     setSelId(p=>p===id?null:p);
   };
 
-  const promote = id => {
-    const b=bucket.find(x=>x.id===id); if (!b) return;
+  const promote=id=>{
+    const b=bucket.find(x=>x.id===id);if(!b)return;
     setBucket(p=>p.filter(x=>x.id!==id));
     setSpots(p=>[...p,{...b,date:todayStr(),weather:"sunny",light:"Golden Hour Morning",temp:"",medium:"",paintedAt:"location"}]);
-    setSelId(id); setTab("map");
+    setSelId(id);setTab("map");
   };
 
-  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null),3500); };
+  const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),3500);};
 
-  const handleImport = e => {
-    const file=e.target.files?.[0]; if(!file) return;
+  const handleImport=e=>{
+    const file=e.target.files?.[0];if(!file)return;
     e.target.value="";
-    importJSON(file, (newSpots,newBucket) => {
-      if (!confirm(`Replace your data with ${newSpots.length} painted spots and ${newBucket.length} bucket list spots?`)) return;
-      lsSave(LS_SPOTS,  newSpots);
-      lsSave(LS_BUCKET, newBucket);
-      setSpots(newSpots);
-      setBucket(newBucket);
+    importJSON(file,(newSpots,newBucket)=>{
+      if(!confirm(`Replace your data with ${newSpots.length} painted spots and ${newBucket.length} bucket list spots?`))return;
+      lsSave(LS_SPOTS,newSpots);lsSave(LS_BUCKET,newBucket);
+      setSpots(newSpots);setBucket(newBucket);
       setShowMenu(false);
       showToast(`✓ Restored ${newSpots.length} spots · ${newBucket.length} bucket items`);
-    }, msg => alert("Import failed: "+msg));
+    },msg=>alert("Import failed: "+msg));
   };
 
-  const Tab = ({ t, icon, label }) => (
-    <button onClick={() => setTab(t)} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center",
-      gap:2, padding:"8px 0", border:"none", cursor:"pointer", background:"transparent",
-      color:tab===t?"#c46a2e":"#9a7a5a", fontFamily:"Georgia,serif", fontSize:10, letterSpacing:"0.06em", transition:"color 0.15s" }}>
-      <span style={{ fontSize:19 }}>{icon}</span>{label}
+  const Tab=({t,icon,label})=>(
+    <button onClick={()=>setTab(t)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",
+      gap:2,padding:"8px 0",border:"none",cursor:"pointer",background:"transparent",
+      color:tab===t?"#c46a2e":"#9a7a5a",fontFamily:"Georgia,serif",fontSize:10,letterSpacing:"0.06em",transition:"color 0.15s"}}>
+      <span style={{fontSize:19}}>{icon}</span>{label}
     </button>
   );
 
-  const ListPane = ({ items, isBucket, emptyMsg }) => (
-    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-      <div style={{ padding:"11px 13px 7px" }}>
+  const ListPane=({items,isBucket,emptyMsg})=>(
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{padding:"11px 13px 7px",display:"flex",flexDirection:"column",gap:8}}>
         <input placeholder={isBucket?"Search bucket list…":"Search journal…"}
           value={search} onChange={e=>setSearch(e.target.value)}
-          style={{ ...S.inp, background:"#fffdf7", borderRadius:12, fontSize:15 }} />
+          style={{...S.inp,background:"#fffdf7",borderRadius:12,fontSize:15}}/>
+        {/* Tag filter pills — only for journal */}
+        {!isBucket&&allTags.length>0&&(
+          <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:2}}>
+            <TagPill tag="All" active={!activeTag} onClick={()=>setActiveTag(null)} small/>
+            {allTags.map(t=><TagPill key={t} tag={t} active={activeTag===t} onClick={()=>setActiveTag(activeTag===t?null:t)} small/>)}
+          </div>
+        )}
       </div>
-      <div style={{ flex:1, overflowY:"auto", padding:"4px 13px 12px" }}>
-        {filt(items).length===0 && <div style={{ textAlign:"center",
-          color:isBucket?"#1a7a6e":"#b09070", fontSize:13, padding:"36px 16px", fontStyle:"italic", lineHeight:1.8 }}>{emptyMsg}</div>}
-        {[...filt(items)].reverse().map(s => (
+      <div style={{flex:1,overflowY:"auto",padding:"4px 13px 12px"}}>
+        {filt(items).length===0&&<div style={{textAlign:"center",
+          color:isBucket?"#1a7a6e":"#b09070",fontSize:13,padding:"36px 16px",fontStyle:"italic",lineHeight:1.8}}>{emptyMsg}</div>}
+        {[...filt(items)].reverse().map(s=>(
           <SpotCard key={s.id} spot={s} isSelected={s.id===selId} isBucket={isBucket}
             onSelect={id=>{setSelId(id);setTab("map");}} onEdit={openEdit}
-            onDelete={handleDelete} onPromote={promote} />
+            onDelete={handleDelete} onPromote={promote}/>
         ))}
       </div>
     </div>
   );
 
   return (
-    <div style={{ height:"100dvh", display:"flex", flexDirection:"column", fontFamily:"Georgia,serif", background:"#f5ece0" }}>
+    <div style={{height:"100dvh",display:"flex",flexDirection:"column",fontFamily:"Georgia,serif",background:"#f5ece0"}}>
 
       {/* Header */}
-      <div style={{ paddingTop:"calc(env(safe-area-inset-top,0px) + 12px)", paddingBottom:"12px",
-        paddingLeft:16, paddingRight:16, display:"flex", alignItems:"center", justifyContent:"space-between",
-        background:"#3b2a1a", boxShadow:"0 2px 12px rgba(30,15,5,0.35)", flexShrink:0 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:22 }}>🎨</span>
+      <div style={{paddingTop:"calc(env(safe-area-inset-top,0px) + 12px)",paddingBottom:"12px",
+        paddingLeft:16,paddingRight:16,display:"flex",alignItems:"center",justifyContent:"space-between",
+        background:"#3b2a1a",boxShadow:"0 2px 12px rgba(30,15,5,0.35)",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:22}}>🎨</span>
           <div>
-            <div style={{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:17, color:"#f5e8d0" }}>Plein Air Journal</div>
-            <div style={{ fontSize:10, color:"#b09070", letterSpacing:"0.1em" }}>{spots.length} PAINTED · {bucket.length} BUCKET</div>
+            <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:17,color:"#f5e8d0"}}>Plein Air Journal</div>
+            <div style={{fontSize:10,color:"#b09070",letterSpacing:"0.1em"}}>{spots.length} PAINTED · {bucket.length} BUCKET</div>
           </div>
         </div>
-        <div style={{ display:"flex", gap:8, alignItems:"center", position:"relative" }}>
-          <input ref={fileRef} type="file" accept=".json" onChange={handleImport} style={{ display:"none" }} />
-          <button onClick={() => setShowMenu(m=>!m)}
-            style={{ padding:"7px 10px", borderRadius:9, border:"none", background:"rgba(255,255,255,0.1)",
-              color:"#f5e8d0", fontSize:18, cursor:"pointer", lineHeight:1 }}>⋯</button>
-          {showMenu && <>
-            <div onClick={() => setShowMenu(false)} style={{ position:"fixed", inset:0, zIndex:998 }} />
-            <div style={{ position:"absolute", top:"calc(100% + 8px)", right:0, zIndex:999,
-              background:"#fffdf7", borderRadius:12, boxShadow:"0 4px 20px rgba(0,0,0,0.18)",
-              border:"1px solid #e8dcc8", minWidth:190, overflow:"hidden" }}>
+        <div style={{display:"flex",gap:8,alignItems:"center",position:"relative"}}>
+          <input ref={fileRef} type="file" accept=".json" onChange={handleImport} style={{display:"none"}}/>
+          <button onClick={()=>setShowMenu(m=>!m)}
+            style={{padding:"7px 10px",borderRadius:9,border:"none",background:"rgba(255,255,255,0.1)",
+              color:"#f5e8d0",fontSize:18,cursor:"pointer",lineHeight:1}}>⋯</button>
+          {showMenu&&<>
+            <div onClick={()=>setShowMenu(false)} style={{position:"fixed",inset:0,zIndex:998}}/>
+            <div style={{position:"absolute",top:"calc(100% + 8px)",right:0,zIndex:999,
+              background:"#fffdf7",borderRadius:12,boxShadow:"0 4px 20px rgba(0,0,0,0.18)",
+              border:"1px solid #e8dcc8",minWidth:190,overflow:"hidden"}}>
               {[
-                ["⬇️","Backup (JSON)",  () => { exportJSON(spots,bucket); setShowMenu(false); }],
-                ["📄","Export CSV",     () => { exportCSV(spots,bucket);  setShowMenu(false); }],
-                ["⬆️","Restore Backup", () => { fileRef.current?.click(); setShowMenu(false); }],
-              ].map(([ico,lbl,fn]) => (
-                <button key={lbl} onClick={fn} style={{ display:"flex", alignItems:"center", gap:10,
-                  width:"100%", padding:"12px 16px", border:"none", background:"transparent", cursor:"pointer",
-                  textAlign:"left", fontFamily:"Georgia,serif", fontSize:14, color:"#3b2a1a", borderBottom:"1px solid #f0e8dc" }}>
-                  <span style={{ fontSize:16 }}>{ico}</span>{lbl}
+                ["⬇️","Backup (JSON)",  ()=>{exportJSON(spots,bucket);setShowMenu(false);}],
+                ["📄","Export CSV",     ()=>{exportCSV(spots,bucket);setShowMenu(false);}],
+                ["⬆️","Restore Backup", ()=>{fileRef.current?.click();setShowMenu(false);}],
+              ].map(([ico,lbl,fn])=>(
+                <button key={lbl} onClick={fn} style={{display:"flex",alignItems:"center",gap:10,
+                  width:"100%",padding:"12px 16px",border:"none",background:"transparent",cursor:"pointer",
+                  textAlign:"left",fontFamily:"Georgia,serif",fontSize:14,color:"#3b2a1a",borderBottom:"1px solid #f0e8dc"}}>
+                  <span style={{fontSize:16}}>{ico}</span>{lbl}
                 </button>
               ))}
             </div>
           </>}
-          <button onClick={() => setModal({})}
-            style={{ padding:"9px 16px", borderRadius:20, border:"none",
-              background:"linear-gradient(135deg,#c46a2e,#9a4820)", color:"#fff",
-              fontFamily:"Georgia,serif", fontSize:13, fontWeight:"bold", cursor:"pointer",
-              boxShadow:"0 3px 12px rgba(160,60,10,0.45)" }}>+ Add</button>
+          <button onClick={()=>setModal({})}
+            style={{padding:"9px 16px",borderRadius:20,border:"none",
+              background:"linear-gradient(135deg,#c46a2e,#9a4820)",color:"#fff",
+              fontFamily:"Georgia,serif",fontSize:13,fontWeight:"bold",cursor:"pointer",
+              boxShadow:"0 3px 12px rgba(160,60,10,0.45)"}}>+ Add</button>
         </div>
       </div>
 
       {/* Content */}
-      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
-        {tab==="map" && (
-          <div style={{ flex:1, padding:12, overflow:"hidden", position:"relative" }}>
-            <MapView spots={filt(spots)} bucket={filt(bucket)} selectedId={selId} onSelect={setSelId} />
-            <div style={{ position:"absolute", bottom:20, left:22, zIndex:999, pointerEvents:"none",
-              background:"rgba(255,253,247,0.93)", borderRadius:10, padding:"6px 10px",
-              fontSize:11, color:"#3b2a1a", boxShadow:"0 2px 8px rgba(0,0,0,0.15)",
-              display:"flex", flexDirection:"column", gap:4 }}>
-              {[["#b8892a","On Location"],["#5c3d20","Studio"],["#1a7a6e","Bucket List"]].map(([c,l]) => (
-                <div key={l} style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ width:9, height:9, borderRadius:"50%", background:c, flexShrink:0 }}/>{l}
-                </div>
+      <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+        {tab==="map"&&(
+          <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            {/* Map filter bar */}
+            <div style={{display:"flex",gap:6,padding:"8px 12px",background:"#f5ece0",flexShrink:0}}>
+              {[["location","🟡","On Location"],["studio","🟤","Studio"],["bucket","🟢","Bucket"]].map(([type,dot,label])=>(
+                <button key={type} onClick={()=>toggleFilter(type)} style={{
+                  display:"flex",alignItems:"center",gap:5,padding:"5px 11px",
+                  borderRadius:20,border:"none",cursor:"pointer",fontFamily:"Georgia,serif",fontSize:12,
+                  background:filterTypes.includes(type)?"#3b2a1a":"#e8dcc8",
+                  color:filterTypes.includes(type)?"#f5e8d0":"#9a7a5a",
+                  transition:"all 0.15s"}}>
+                  {dot} {label}
+                </button>
               ))}
+            </div>
+            <div style={{flex:1,padding:"0 12px 12px",overflow:"hidden",position:"relative"}}>
+              <MapView spots={filt(spots)} bucket={filt(bucket)} selectedId={selId} onSelect={setSelId} filterTypes={filterTypes}/>
             </div>
           </div>
         )}
-        {tab==="list"   && <ListPane items={spots}  isBucket={false} emptyMsg={spots.length===0?"No spots yet.\nTap + Add to log your first session.":"No spots match your search."} />}
-        {tab==="cal"    && <CalendarView spots={spots} onSelectSpot={id=>{setSelId(id);setTab("map");}} />}
-        {tab==="bucket" && <ListPane items={bucket} isBucket={true}  emptyMsg={bucket.length===0?"No bucket list spots yet.\nTap + Add → Bucket List to add one.":"No spots match your search."} />}
+        {tab==="list"  &&<ListPane items={spots}  isBucket={false} emptyMsg={spots.length===0?"No spots yet.\nTap + Add to log your first session.":"No spots match your search."}/>}
+        {tab==="cal"   &&<CalendarView spots={spots} onSelectSpot={id=>{setSelId(id);setTab("map");}}/>}
+        {tab==="bucket"&&<ListPane items={bucket} isBucket={true}  emptyMsg={bucket.length===0?"No bucket list spots yet.\nTap + Add → Bucket List to add one.":"No spots match your search."}/>}
+        {tab==="stats" &&<StatsView spots={spots}/>}
       </div>
 
       {/* Tab bar */}
-      <div style={{ display:"flex", background:"#fffdf7", borderTop:"1px solid #e8dcc8", flexShrink:0,
-        paddingBottom:"env(safe-area-inset-bottom,0px)" }}>
-        <Tab t="map"    icon="🗺"  label="MAP" />
-        <Tab t="cal"    icon="📅"  label="CALENDAR" />
-        <Tab t="list"   icon="☰"   label="JOURNAL" />
-        <Tab t="bucket" icon="⭐"  label="BUCKET" />
+      <div style={{display:"flex",background:"#fffdf7",borderTop:"1px solid #e8dcc8",flexShrink:0,
+        paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
+        <Tab t="map"    icon="🗺"  label="MAP"/>
+        <Tab t="cal"    icon="📅"  label="CALENDAR"/>
+        <Tab t="list"   icon="☰"   label="JOURNAL"/>
+        <Tab t="bucket" icon="⭐"  label="BUCKET"/>
+        <Tab t="stats"  icon="📊"  label="STATS"/>
       </div>
 
-      {modal && <SpotModal initial={modal.initial} editingBucket={modal.editingBucket}
-        onSave={handleSave} onClose={() => setModal(null)} />}
+      {modal&&<SpotModal initial={modal.initial} editingBucket={modal.editingBucket}
+        onSave={handleSave} onClose={()=>setModal(null)}/>}
 
-      {toast && <div style={{ position:"fixed", bottom:80, left:"50%", transform:"translateX(-50%)", zIndex:2000,
-        background:"#3b2a1a", color:"#f5e8d0", padding:"10px 18px", borderRadius:20,
-        fontSize:13, fontFamily:"Georgia,serif", boxShadow:"0 4px 16px rgba(0,0,0,0.25)",
-        whiteSpace:"nowrap", pointerEvents:"none" }}>{toast}</div>}
+      {toast&&<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",zIndex:2000,
+        background:"#3b2a1a",color:"#f5e8d0",padding:"10px 18px",borderRadius:20,
+        fontSize:13,fontFamily:"Georgia,serif",boxShadow:"0 4px 16px rgba(0,0,0,0.25)",
+        whiteSpace:"nowrap",pointerEvents:"none"}}>{toast}</div>}
     </div>
   );
 }
