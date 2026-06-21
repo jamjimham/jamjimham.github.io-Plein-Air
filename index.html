@@ -38,7 +38,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <script>
-window.onerror=function(m,s,l,c,e){alert("JS Error:\n"+m+"\nLine: "+l);};
+window.onerror=function(m,s,l,col,e){console.error("JS Error:",m,"Line:",l,e);};
 </script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef, useMemo } = React;
@@ -52,6 +52,59 @@ function lsLoad(key) {
 function lsSave(key, data) {
   try { localStorage.setItem(key, JSON.stringify(data)); }
   catch(e) { alert("⚠️ Could not save — storage may be full. Please export a backup."); }
+}
+
+
+/* ─── Supabase photo storage ─────────────────────────────────────── */
+var SUPA_URL = "https://seqfbtofevmcgafywlrh.supabase.co";
+var SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNlcWZidG9mZXZtY2dhZnl3bHJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5OTczNDksImV4cCI6MjA5NzU3MzM0OX0.Eq0r8z9bSuibgPjP4kpfNnusU3kCUrragzEcqFsI2Oo";
+var SUPA_BUCKET = "paintings";
+
+function compressImage(file, maxPx, quality) {
+  maxPx = maxPx || 1200;
+  quality = quality || 0.72;
+  return new Promise(function(res, rej) {
+    var img = new Image();
+    var url = URL.createObjectURL(file);
+    img.onload = function() {
+      URL.revokeObjectURL(url);
+      var scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      var c = document.createElement("canvas");
+      c.width  = Math.round(img.width  * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(function(blob) { res(blob); }, "image/jpeg", quality);
+    };
+    img.onerror = rej;
+    img.src = url;
+  });
+}
+
+function uploadPhoto(file, spotId, field) {
+  return compressImage(file).then(function(blob) {
+    var path = spotId + "/" + field + "-" + Date.now() + ".jpg";
+    return fetch(SUPA_URL + "/storage/v1/object/" + SUPA_BUCKET + "/" + path, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + SUPA_KEY,
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true"
+      },
+      body: blob
+    }).then(function(r) {
+      if (!r.ok) throw new Error("Upload failed: " + r.status);
+      return SUPA_URL + "/storage/v1/object/public/" + SUPA_BUCKET + "/" + path;
+    });
+  });
+}
+
+function deletePhoto(url) {
+  if (!url || url.indexOf(SUPA_URL) === -1) return Promise.resolve();
+  var path = url.replace(SUPA_URL + "/storage/v1/object/public/" + SUPA_BUCKET + "/", "");
+  return fetch(SUPA_URL + "/storage/v1/object/" + SUPA_BUCKET + "/" + path, {
+    method: "DELETE",
+    headers: { "Authorization": "Bearer " + SUPA_KEY }
+  });
 }
 
 /* ─── Constants ──────────────────────────────────────────────────── */
@@ -76,7 +129,7 @@ const SUGGESTED_TAGS = ["Trees","Water","Urban","Mountains","Fields","Buildings"
   "Figures","Animals","Coast","Desert","Snow","Sunset","Sunrise","Night"];
 
 const fmtDate      = iso => new Date(iso).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});
-const weatherLabel = v   => WEATHER.find(w=>w.value===v)?.label ?? "";
+const weatherLabel = v   => (WEATHER.find(function(w){return w.value===v;})||{label:""}).label;
 const todayStr     = ()  => new Date().toISOString().slice(0,10);
 
 /* ─── Shared styles ─────────────────────────────────────────────── */
@@ -148,6 +201,55 @@ function TagField({ tags, onChange }) {
           <TagPill key={t} tag={t} active={false} onClick={()=>add(t)} small />
         ))}
       </div>
+    </div>
+  );
+}
+
+
+/* ─── Photo field ───────────────────────────────────────────────── */
+function PhotoField({ label, value, onChange, spotId, field }) {
+  var ref = useRef(null);
+  var [busy, setBusy] = useState(false);
+  var [err,  setErr]  = useState(null);
+
+  var handle = function(e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    setBusy(true); setErr(null);
+    uploadPhoto(file, spotId || "tmp-" + Date.now(), field)
+      .then(function(url) { onChange(url); setBusy(false); })
+      .catch(function(er) { setErr("Upload failed — check your internet connection."); setBusy(false); });
+  };
+
+  var handleRemove = function() {
+    deletePhoto(value);
+    onChange(null);
+  };
+
+  return (
+    <div>
+      <label style={S.lbl}>{label}</label>
+      <input ref={ref} type="file" accept="image/*" onChange={handle} style={{display:"none"}}/>
+      {value ? (
+        <div style={{position:"relative",borderRadius:10,overflow:"hidden",border:"1.5px solid #d6c4a8"}}>
+          <img src={value} alt="" style={{width:"100%",display:"block",maxHeight:200,objectFit:"cover"}}/>
+          <div style={{position:"absolute",top:6,right:6,display:"flex",gap:6}}>
+            <button type="button" onClick={function(){ref.current && ref.current.click();}}
+              style={{padding:"5px 10px",borderRadius:8,border:"none",cursor:"pointer",background:"rgba(59,42,26,0.75)",color:"#fff",fontSize:12,fontFamily:"Georgia,serif"}}>Change</button>
+            <button type="button" onClick={handleRemove}
+              style={{padding:"5px 10px",borderRadius:8,border:"none",cursor:"pointer",background:"rgba(180,40,20,0.75)",color:"#fff",fontSize:12,fontFamily:"Georgia,serif"}}>Remove</button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={function(){ref.current && ref.current.click();}}
+          style={{width:"100%",padding:"14px 0",borderRadius:10,border:"1.5px dashed #d6c4a8",
+            background:"#fffdf8",cursor:busy?"default":"pointer",color:busy?"#b09070":"#9a7a5a",
+            fontFamily:"Georgia,serif",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          {busy ? "⏳ Uploading…" : "📷 Add Photo"}
+        </button>
+      )}
+      {err && <div style={{fontSize:11,color:"#a03a10",marginTop:4}}>{err}</div>}
     </div>
   );
 }
@@ -239,6 +341,7 @@ function MapView({ spots, bucket, selectedId, onSelect, filterTypes }) {
           <br/><span style="font-size:11px;color:#9a7a5a">${item.paintedAt==="studio"?"🏠 Studio":"📍 On Location"}</span>`:""}
         ${item.notes?`<p style="margin:5px 0 0;font-size:12px;color:#555">${item.notes}</p>`:""}
         ${tagHtml}
+        ${(function(){var photos=isBucket?[item.photoLocation].filter(Boolean):[item.photoPainting,item.photoScene].filter(Boolean);return photos.length?'<div style="display:flex;gap:4px;margin-top:6px">'+photos.map(function(p){return'<img src="'+p+'" style="width:'+(photos.length===1?"100%":"48%")+';border-radius:6px;object-fit:cover;max-height:90px">'}).join("")+"</div>":"";})()}
       </div>`);
       marker.on("click", ()=>onSelect(item.id));
       cluster.addLayer(marker);
@@ -383,7 +486,7 @@ function StatsView({ spots }) {
 
 /* ─── Form fields ───────────────────────────────────────────────── */
 const BLANK = { name:"", lat:"", lng:"", weather:"sunny", light:"Golden Hour Morning",
-  temp:"", notes:"", medium:"", paintedAt:"location", tags:[] };
+  temp:"", notes:"", medium:"", paintedAt:"location", tags:[], photoPainting:null, photoScene:null, photoLocation:null };
 
 function FormFields({ form, setForm, isBucket }) {
   const [gps, setGps] = useState("idle");
@@ -462,6 +565,16 @@ function FormFields({ form, setForm, isBucket }) {
           placeholder={isBucket?"Why paint here? Best time of year…":"What inspired you? Challenges, discoveries…"}/>
       </div>
       <TagField tags={form.tags||[]} onChange={v=>set("tags",v)}/>
+      {!isBucket&&<>
+        <PhotoField label="🎨  PHOTO OF PAINTING" value={form.photoPainting||null}
+          onChange={function(v){set("photoPainting",v);}} spotId={form.id} field="painting"/>
+        <PhotoField label="🏞  PHOTO OF SCENE" value={form.photoScene||null}
+          onChange={function(v){set("photoScene",v);}} spotId={form.id} field="scene"/>
+      </>}
+      {isBucket&&
+        <PhotoField label="🏞  PHOTO OF LOCATION" value={form.photoLocation||null}
+          onChange={function(v){set("photoLocation",v);}} spotId={form.id} field="location"/>
+      }
     </div>
   );
 }
@@ -495,7 +608,7 @@ function Sheet({ title, onClose, onSave, saveLabel, children }) {
 /* ─── Spot modal ────────────────────────────────────────────────── */
 function SpotModal({ initial, editingBucket, onSave, onClose }) {
   const isEdit = !!initial;
-  const [isBucket, setIsBucket] = useState(editingBucket??false);
+  const [isBucket, setIsBucket] = useState(editingBucket !== undefined && editingBucket !== null ? editingBucket : false);
   const [form, setForm] = useState(isEdit
     ? {...BLANK,...initial,lat:String(initial.lat),lng:String(initial.lng)}
     : {...BLANK,date:todayStr()});
@@ -507,8 +620,8 @@ function SpotModal({ initial, editingBucket, onSave, onClose }) {
     if (isNaN(la)||isNaN(lo))           { setErr("Please enter valid coordinates."); return; }
     if (la<-90||la>90||lo<-180||lo>180) { setErr("Coordinates out of range."); return; }
     onSave({...form,lat:la,lng:lo,
-      id:initial?.id??Date.now().toString(),
-      createdAt:initial?.createdAt??new Date().toISOString()}, isBucket);
+      id:(initial && initial.id ? initial.id : Date.now().toString()),
+      createdAt:(initial && initial.createdAt ? initial.createdAt : new Date().toISOString())}, isBucket);
   };
 
   const title = isEdit?(editingBucket?"Edit Bucket List Spot":"Edit Painting Spot")
@@ -580,6 +693,11 @@ function CalendarView({ spots, onSelectSpot }) {
         {selSpots.map(s=>(
           <div key={s.id} onClick={()=>onSelectSpot(s.id)}
             style={{padding:"11px 13px",borderRadius:12,background:"#fffdf7",border:"1.5px solid #e8dcc8",marginBottom:8,cursor:"pointer"}}>
+            {(s.photoPainting||s.photoScene)&&<div style={{display:"flex",gap:4,marginBottom:8}}>
+              {[s.photoPainting,s.photoScene].filter(Boolean).map(function(p,i){return(
+                <img key={i} src={p} alt="" style={{flex:1,height:70,objectFit:"cover",borderRadius:8}}/>
+              );})}
+            </div>}
             <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:15,color:"#3b2a1a",fontWeight:"bold"}}>{s.name}</div>
             <div style={{fontSize:13,color:"#9a7a5a",marginTop:2}}>{weatherLabel(s.weather)}{s.light?` · ${s.light}`:""}</div>
             {s.medium&&<div style={{fontSize:12,color:"#b09070"}}>{s.medium}</div>}
@@ -612,6 +730,20 @@ function SpotCard({ spot, isSelected, isBucket, onSelect, onEdit, onDelete, onPr
       background:isSelected?(isBucket?"#e0f5f3":"#f5e8d6"):"#fffdf7",
       border:`1.5px solid ${isSelected?(isBucket?"#2a9d8f":"#c46a2e"):"#e8dcc8"}`,
       boxShadow:isSelected?"0 4px 14px rgba(0,0,0,0.09)":"none"}}>
+      {/* Photo strip */}
+      {((!isBucket&&(spot.photoPainting||spot.photoScene))||(isBucket&&spot.photoLocation))&&(
+        <div style={{display:"flex",gap:4,marginBottom:10}}>
+          {(isBucket?[{src:spot.photoLocation,lbl:"🏞 LOCATION"}]
+            :[spot.photoPainting&&{src:spot.photoPainting,lbl:"🎨 PAINTING"},
+              spot.photoScene&&{src:spot.photoScene,lbl:"🏞 SCENE"}].filter(Boolean)
+          ).map(function(p,i){return(
+            <div key={i} style={{flex:1,position:"relative"}}>
+              <img src={p.src} alt="" style={{width:"100%",height:90,objectFit:"cover",borderRadius:8,display:"block"}}/>
+              <div style={{position:"absolute",bottom:4,left:4,background:"rgba(59,42,26,0.65)",
+                borderRadius:4,padding:"2px 5px",fontSize:9,color:"#fff",fontFamily:"Georgia,serif"}}>{p.lbl}</div>
+            </div>
+          );})}</div>
+      )}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontFamily:"'Playfair Display',Georgia,serif",fontSize:15,color:"#3b2a1a",fontWeight:"bold"}}>{spot.name}{badge}</div>
@@ -714,6 +846,9 @@ function App() {
 
   const handleDelete=id=>{
     if(!confirm("Remove this spot?"))return;
+    const allItems=[...spots,...bucket];
+    const item=allItems.find(x=>x.id===id);
+    if(item){[item.photoPainting,item.photoScene,item.photoLocation].filter(Boolean).forEach(deletePhoto);}
     setSpots(p=>p.filter(s=>s.id!==id));
     setBucket(p=>p.filter(b=>b.id!==id));
     setSelId(p=>p===id?null:p);
@@ -729,7 +864,7 @@ function App() {
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),3500);};
 
   const handleImport=e=>{
-    const file=e.target.files?.[0];if(!file)return;
+    const file=e.target.files&&e.target.files[0];if(!file)return;
     e.target.value="";
     importJSON(file,(newSpots,newBucket)=>{
       if(!confirm(`Replace your data with ${newSpots.length} painted spots and ${newBucket.length} bucket list spots?`))return;
@@ -801,7 +936,7 @@ function App() {
               {[
                 ["⬇️","Backup (JSON)",  ()=>{exportJSON(spots,bucket);setShowMenu(false);}],
                 ["📄","Export CSV",     ()=>{exportCSV(spots,bucket);setShowMenu(false);}],
-                ["⬆️","Restore Backup", ()=>{fileRef.current?.click();setShowMenu(false);}],
+                ["⬆️","Restore Backup", ()=>{fileRef.current && fileRef.current.click();setShowMenu(false);}],
               ].map(([ico,lbl,fn])=>(
                 <button key={lbl} onClick={fn} style={{display:"flex",alignItems:"center",gap:10,
                   width:"100%",padding:"12px 16px",border:"none",background:"transparent",cursor:"pointer",
