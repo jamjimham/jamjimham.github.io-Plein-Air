@@ -92,7 +92,7 @@ function uploadPhoto(file, spotId, field) {
       },
       body: blob
     }).then(function(r) {
-      if (!r.ok) throw new Error("Upload failed: " + r.status);
+      if (!r.ok) return r.text().then(function(body){ throw new Error("HTTP " + r.status + ": " + body); });
       return SUPA_URL + "/storage/v1/object/public/" + SUPA_BUCKET + "/" + path;
     });
   });
@@ -219,7 +219,7 @@ function PhotoField({ label, value, onChange, spotId, field }) {
     setBusy(true); setErr(null);
     uploadPhoto(file, spotId || "tmp-" + Date.now(), field)
       .then(function(url) { onChange(url); setBusy(false); })
-      .catch(function(er) { setErr("Upload failed — check your internet connection."); setBusy(false); });
+      .catch(function(er) { setErr("Upload failed: " + (er && er.message ? er.message : String(er))); setBusy(false); console.error("Upload error:", er); });
   };
 
   var handleRemove = function() {
