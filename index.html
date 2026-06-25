@@ -102,7 +102,19 @@ function fromRow(row) {
 /* ── Local storage fallback (used while Supabase loads + as cache) ── */
 const LS_SPOTS  = "pai-spots-v4";
 const LS_BUCKET = "pai-bucket-v4";
-function lsLoad(key)      { try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; } }
+// Legacy keys — read old data if new keys are empty
+const LS_SPOTS_OLD  = "pai-spots-v3";
+const LS_BUCKET_OLD = "pai-bucket-v3";
+
+function lsLoad(key) {
+  try {
+    var data = JSON.parse(localStorage.getItem(key) || "[]");
+    if (data.length > 0) return data;
+    // Try legacy key
+    var legacyKey = key === LS_SPOTS ? LS_SPOTS_OLD : LS_BUCKET_OLD;
+    return JSON.parse(localStorage.getItem(legacyKey) || "[]");
+  } catch(e) { return []; }
+}
 function lsSave(key, data){ try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.warn("lsSave failed", e); } }
 
 /* ── Photo upload ── */
@@ -993,23 +1005,29 @@ function App() {
   var [activeTag, setActiveTag] = useState(null);
   var fileRef = useRef(null);
 
-  // Load from Supabase on mount — localStorage is shown immediately as cache
+  // Load from Supabase on mount — localStorage shown immediately, DB data merged in
   useEffect(function() {
     Promise.all([dbLoadSpots(), dbLoadBucket()])
       .then(function(results) {
         var dbSpots  = results[0].map(fromRow);
         var dbBucket = results[1].map(fromRow);
-        setSpots(dbSpots);
-        setBucket(dbBucket);
-        lsSave(LS_SPOTS,  dbSpots);
-        lsSave(LS_BUCKET, dbBucket);
+        // Merge: if DB has data use it, otherwise keep local cache
+        if (dbSpots.length > 0 || dbBucket.length > 0) {
+          setSpots(dbSpots);
+          setBucket(dbBucket);
+          lsSave(LS_SPOTS,  dbSpots);
+          lsSave(LS_BUCKET, dbBucket);
+        }
         setDbReady(true);
+        setSyncing(false);
       })
       .catch(function(err) {
-        console.warn("Supabase load failed, using local cache:", err);
+        console.warn("Supabase load failed, keeping local cache:", err);
+        // Don't clear state — keep whatever localStorage had
         setDbReady(false);
-      })
-      .finally(function() { setSyncing(false); });
+        setSyncing(false);
+        showToastEarly("⚠️ Could not reach cloud — showing local data. Check Supabase tables are created.");
+      });
   }, []);
 
   // Save to localStorage whenever state changes (cache)
@@ -1046,7 +1064,10 @@ function App() {
     if (isBkt) { setBucket(upsert); setSpots(function(p){return p.filter(function(x){return x.id!==item.id;});}); }
     else        { setSpots(upsert); setBucket(function(p){return p.filter(function(x){return x.id!==item.id;});}); }
     // Persist to Supabase
-    dbUpsertSpot(item, table).catch(function(err){console.warn("DB save failed:",err);showToast("⚠️ Saved locally only — sync failed");});
+    dbUpsertSpot(item, table).catch(function(err){
+      console.warn("DB save failed:",err);
+      if (dbReady) showToast("⚠️ Saved locally — will sync when reconnected");
+    });
     setSelId(item.id); setModal(null); setTab("map");
   };
 
@@ -1079,7 +1100,8 @@ function App() {
     setSelId(id); setTab("map");
   };
 
-  var showToast = function(msg){setToast(msg);setTimeout(function(){setToast(null);},3500);};
+  var showToast = function(msg){setToast(msg);setTimeout(function(){setToast(null);},4500);};
+  var showToastEarly = showToast; // alias used in load effect
 
   var handleImport = function(e) {
     var file=e.target.files&&e.target.files[0]; if(!file) return;
